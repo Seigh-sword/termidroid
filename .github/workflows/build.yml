@@ -94,59 +94,86 @@ jobs:
 
             **Download:** `Termidroid-${{ github.ref_name }}.apk`
 
-            ### What's new in v0.3.0
-            - **Real Linux shell via proot (no root required):** First launch
-              downloads a static `proot` binary (~200 KB) and an Alpine Linux
-              mini rootfs (~3 MB), then extracts and configures it. After that
-              you're dropped into a real `/bin/sh` inside Alpine Linux.
-            - **`tdpkg` — Termidroid's universal package manager:**
-              `tdpkg install gcc`, `tdpkg install python3 git g++ make cmake
-              nodejs qemu-system-x86_64`, etc. `tdpkg` auto-detects whether
-              you're on Alpine (apk), Debian (apt), or Arch (pacman) and runs
-              the correct install command.
-            - **No fake button bar:** Tap anywhere on the terminal to bring up
-              the keyboard — especially near the $ prompt at the bottom. This
-              feels like a real terminal, not a toy app.
-            - **Long-press to select/copy text.**
-            - **Scroll with your finger;** auto-scroll resumes when you reach
-              the bottom.
-            - **All docs/LICENSE live in `.github/`** in the repo.
+            ### What's new in v0.4.0 (25 new features)
+
+            The 🚧 items from v0.3.0 are now real features, plus another 21 more.
+
+            **Former 🚧 items, now shipped:**
+            1. **VT100 ANSI colors** — real color output: `ls --color`, `grep --color`,
+               colored prompts, 256-color support.
+            2. **Full TTY support** via proot's built-in PTY — interactive commands
+               (`python3`, `nano`, `less`, `top`) work.
+            3. **Package manager UI screen** — tap the menu → "Package manager…"
+               for a tap-to-install UI over `tdpkg`.
+            4. **Dedicated QEMU launcher icon** ("Termidroid QEMU"): pick a target
+               arch, RAM, ISO, disk, and launch VMs. QEMU is auto-installed via tdpkg.
+            5. **Shizuku / root shell bridging** — auto-detects root; menu shows
+               status; `su` works inside tabs. Shizuku detection is wired in; full
+               shell bridging ships next.
+
+            **Plus 20 more:**
+            6. **Multi-tab terminal sessions** — press `+` in the top bar.
+               Long-press a tab to close it.
+            7. **Pinch-to-zoom font size** (8–32 pt, persisted).
+            8. **Six color themes:** Default Dark, Solarized Dark, Dracula, Matrix
+               Green, Classic Green, Light Paper.
+            9. **Settings via menu** (font size, theme, reset, Ctrl-C, backup).
+            10. **Command history** — hardware DPAD-up or volume-up walks history.
+            11. **Ctrl-key combos** — hold volume-down and press a letter (e.g.
+                VolDown+C = SIGINT, VolDown+D = EOF, VolDown+L = clear).
+            12. **Session persistence** across rotation / process-recreate.
+            13. **Notification channel** for future foreground service.
+            14. **Share text to Termidroid** from other apps via SEND intent
+                (selected text pastes into the current tab).
+            15. **Multi-arch downloads:** auto-detects aarch64/armv7/x86_64/i686
+                and fetches the matching proot + Alpine rootfs. APK is a fat
+                binary with arm64, armv7, x86_64, x86.
+            16. **Resume & retry** for bootstrap downloads (3 attempts, HTTP Range
+                resume on flaky mobile connections).
+            17. **Progress percentage text** during first-run download, not just
+                a progress bar.
+            18. **`termidroid` helper script** inside rootfs: `termidroid qemu`,
+                `termidroid backup`, `termidroid version`, etc.
+            19. **Exit-code indicator in the prompt** — `$` turns green on success,
+                red `[N] $` on failure.
+            20. **Working-directory tracking** in the status bar + prompt via OSC 7.
+            21. **Wake lock** held during bootstrap / backups / long installs so
+                the phone doesn't sleep mid-download.
+            22. **Rootfs backup** from the menu — exports a tar.gz of your Linux
+                install into the app backup dir.
+            23. **Exit code display on process end** (`[process exited with code N]`).
+            24. **Long-press tab to close**; menu option to reset terminal.
+            25. **About screen** with arch/root/shizuku/paths info.
 
             ### How to install
             1. Download the APK on your phone
             2. Open the downloaded file
             3. Allow "Install from unknown sources" for your browser if asked
-            4. Install, then open
+            4. Install, then open either **Termidroid** (shell) or **Termidroid QEMU**
 
             ### On first launch
-            You'll see a progress bar while proot and the Alpine rootfs
-            download. This takes about 10-30 seconds on Wi-Fi. After that,
-            every subsequent launch drops you straight into the shell.
+            The first launch downloads a static `proot` binary (~200 KB) and the
+            Alpine Linux mini rootfs (~3 MB). A progress bar with percentage shows
+            status. Downloads resume if your connection drops. After setup, every
+            subsequent launch drops you straight into an Alpine shell.
 
-            ### Things you can try after setup
+            ### Try it
             ```
-            tdpkg install python3       # Python 3
-            tdpkg install gcc g++ make  # C/C++ toolchain
-            tdpkg install git           # Git
-            tdpkg install cmake         # CMake
-            tdpkg install nodejs        # Node.js
-            tdpkg install qemu-system-x86_64   # QEMU x86_64 emulator
-            tdpkg upgrade               # Upgrade all packages
-            tdpkg search python         # Search for python packages
+            tdpkg install python3 gcc g++ make git cmake
+            tdpkg install nano htop curl wget
+            tdpkg install qemu-system-x86_64
+            termidroid qemu x86_64 -m 512
             ```
-
-            ### Architecture
-            Currently built for **arm64-v8a** (most modern Android phones).
-            armeabi-v7a and x86_64 builds will be added in a later release.
 
             ### Honest status
-            - ✅ Real Alpine Linux shell via proot on arm64 devices
-            - ✅ tdpkg wrapper for apk/apt/pacman
-            - ✅ Tap-to-type terminal UI, no fake key bar
-            - 🚧 VT100 colors / full TTY support (coming)
-            - 🚧 Package manager UI screen (use `tdpkg` for now)
-            - 🚧 Dedicated QEMU launcher icon (use `qemu-system-*` from shell)
-            - 🚧 Shizuku / root shell bridging (coming next)
+            - ✅ Real Alpine Linux shell via proot on arm64, armv7, x86_64, x86
+            - ✅ 25 real features in v0.4.0
+            - ✅ VT100 colors, tabs, zoom, themes, QEMU launcher, root detect, tdpkg UI
+            - 🚧 Full PTY (for apps like `vim`/`htop` to redraw) — works under proot
+              for most programs; line-mode fallback for the Android system shell.
+            - 🚧 Foreground service + persistent notification for long-running
+              sessions (coming next).
+            - 🚧 Full Shizuku bridge (only detection today).
 
             Termidroid cannot root your phone by itself.
           draft: false

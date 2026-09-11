@@ -11,11 +11,12 @@ android {
         applicationId = "com.termidroid"
         minSdk = 24
         targetSdk = 34
-        versionCode = 5
-        versionName = "0.3.0"
+        versionCode = 6
+        versionName = "0.4.0"
 
+        // Include 4 ABIs so bootstrap can pick the matching proot/Alpine at runtime.
         ndk {
-            abiFilters += listOf("arm64-v8a")  // primary target for v0.3
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
         }
     }
 
