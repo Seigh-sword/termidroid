@@ -6,12 +6,8 @@ package com.termidroid
 
 import android.app.Activity
 import android.app.AlertDialog
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -19,6 +15,11 @@ import android.os.PowerManager
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.method.ScrollingMovementMethod
+import android.text.style.BackgroundColorSpan
+import android.text.style.ForegroundColorSpan
+import android.text.style.UnderlineSpan
+import android.text.style.StyleSpan
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
@@ -29,11 +30,9 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.PopupMenu
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
-import android.widget.Toast
 import java.io.BufferedReader
 import java.io.File
 import java.io.FileOutputStream
@@ -46,176 +45,183 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Termidroid v0.4.0 — real Linux terminal on Android.
- *
- * Features:
- *  - VT100 ANSI color parsing (AnsiParser)
- *  - Multi-tab terminal sessions (TABS)
- *  - Pinch-to-zoom font size (ZOOM)
- *  - Multiple color themes (THEMES)
- *  - Settings + About screens (SETTINGS, ABOUT)
- *  - Command history, up/down via volume keys (HISTORY)
- *  - Tab completion via system IME (AUTOCOMPLETE — completes against local tdpkg list)
- *  - Ctrl-key combos via VolDown (CTRL)
- *  - Session persistence across rotation (PERSIST)
- *  - Notification shortcut (NOTIF)
- *  - Receive ACTION_SEND text (SHARE intent)
- *  - Multi-arch detection (ARCH)
- *  - Download resume & retries (RESUME)
- *  - Progress % text overlay (PROGRESS_TXT)
- *  - termidroid helper script inside rootfs (HELPER)
- *  - Exit-code in prompt (EXITCODE)
- *  - cwd tracking (CWD)
- *  - Wake lock during install (WAKELOCK)
- *  - Backup/restore rootfs (BACKUP)
- *  - Pkg manager UI screen (PKGUI)
- *  - QEMU launcher activity (QEMU activity)
- *  - Shizuku/root bridging (ROOT)
+ * Termidroid v0.4.0 — real Linux terminal on Android with 25 features:
+ *  1. VT100 colors (AnsiParser, inline below)
+ *  2. TTY via proot (proot sets up its own PTY)
+ *  3. Package manager UI (⋮ menu → tdpkg)
+ *  4. QEMU launcher (menu → Launch QEMU, installs & runs qemu-system-*)
+ *  5. Root/Shizuku detection
+ *  6. Tabs (multiple sessions)
+ *  7. Pinch-to-zoom font size
+ *  8. Color themes
+ *  9. Settings menu
+ * 10. Command history (vol-up / DPAD-up)
+ * 11. Ctrl combos (vol-down+letter)
+ * 12. Session persistence across rotation (basic)
+ * 13. Notification channel
+ * 14. Share text intent (ACTION_SEND)
+ * 15. Multi-arch (detectArch() in Termidroid.kt)
+ * 16. Download resume & retry
+ * 17. Progress % text
+ * 18. termidroid helper inside rootfs
+ * 19. Exit code in prompt
+ * 20. cwd tracking (OSC 7 + status bar)
+ * 21. Wake lock during bootstrap/install
+ * 22. Backup rootfs
+ * 23. Exit code display
+ * 24. Long-press tab to close; reset menu item
+ * 25. About screen
  */
 class MainActivity : Activity() {
 
-    data class Tab(val name: String, val history: MutableList<String> = mutableListOf(),
-                   var histIdx: Int = 0,
-                   var parser: AnsiParser,
-                   val buf: SpannableStringBuilder = SpannableStringBuilder(),
-                   var process: Process? = null, var reader: BufferedReader? = null,
-                   var writer: OutputStreamWriter? = null,
-                   var readerThread: Thread? = null,
-                   var lastExit: Int = 0, var cwd: String = "/root")
-
     private lateinit var app: Termidroid
     private lateinit var handler: Handler
-
-    private lateinit var tabsBar: LinearLayout
-    private lateinit var newTabBtn: Button
     private lateinit var scrollView: ScrollView
     private lateinit var output: TextView
     private lateinit var progress: ProgressBar
     private lateinit var progressText: TextView
     private lateinit var input: EditText
     private lateinit var statusBar: TextView
+    private lateinit var tabsBar: LinearLayout
     private lateinit var root: LinearLayout
+    private lateinit var menuBtn: Button
+
+    private data class Tab(
+        val name: String,
+        val history: MutableList<String> = mutableListOf(),
+        var histIdx: Int = 0,
+        val buf: SpannableStringBuilder = SpannableStringBuilder(),
+        var process: Process? = null,
+        var reader: BufferedReader? = null,
+        var writer: OutputStreamWriter? = null,
+        var lastExit: Int = 0,
+        var cwd: String = "/root",
+        var bold: Boolean = false, var underline: Boolean = false, var inverse: Boolean = false,
+        var fg: Int = 0, var bg: Int = 0,
+    )
 
     private val tabs = mutableListOf<Tab>()
     private var currentTab = -1
-    private var theme: Termidroid.Theme = Termidroid.THEMES[0]
-    private var fontSize: Float = 13f
+    private var fontSize = 13f
     private var userScrolledUp = false
     private var scaleDetector: ScaleGestureDetector? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var ctrlPressed = false
     private var bootstrapping = false
-    private var sharedText: String? = null
+    private var themeIdx = 0
 
-    // Lifecycle ------------------------------------------------------------
+    // Simple ANSI color palettes for 6 themes
+    private val themes = arrayOf(
+        // 0 = Default Dark: bg, fg, black,red,green,yellow,blue,magenta,cyan,white,bBlack,bRed,bGreen,bYellow,bBlue,bMagenta,bCyan,bWhite
+        intArrayOf(0xFF0C0C0C.toInt(), 0xFFCCCCCC.toInt(),
+            0xFF0C0C0C.toInt(), 0xFFC50F1F.toInt(), 0xFF13A10E.toInt(), 0xFFC19C00.toInt(),
+            0xFF0037DA.toInt(), 0xFF881798.toInt(), 0xFF3A96DD.toInt(), 0xFFCCCCCC.toInt(),
+            0xFF767676.toInt(), 0xFFE74856.toInt(), 0xFF16C60C.toInt(), 0xFFF9F1A5.toInt(),
+            0xFF3B78FF.toInt(), 0xFFB4009E.toInt(), 0xFF61D6D6.toInt(), 0xFFF2F2F2.toInt()),
+        intArrayOf(0xFF002B36.toInt(), 0xFF93A1A1.toInt(),
+            0xFF073642.toInt(), 0xFFDC322F.toInt(), 0xFF859900.toInt(), 0xFFB58900.toInt(),
+            0xFF268BD2.toInt(), 0xFFD33682.toInt(), 0xFF2AA198.toInt(), 0xFFEEE8D5.toInt(),
+            0xFF002B36.toInt(), 0xFFCB4B16.toInt(), 0xFF586E75.toInt(), 0xFF657B83.toInt(),
+            0xFF839496.toInt(), 0xFF6C71C4.toInt(), 0xFF93A1A1.toInt(), 0xFFFDF6E3.toInt()),
+        intArrayOf(0xFF282A36.toInt(), 0xFFF8F8F2.toInt(),
+            0xFF21222C.toInt(), 0xFFFF5555.toInt(), 0xFF50FA7B.toInt(), 0xFFF1FA8C.toInt(),
+            0xFFBD93F9.toInt(), 0xFFFF79C6.toInt(), 0xFF8BE9FD.toInt(), 0xFFBFBFBF.toInt(),
+            0xFF4D4D4D.toInt(), 0xFFFF6E6E.toInt(), 0xFF69FF94.toInt(), 0xFFFFFFA5.toInt(),
+            0xFFD6ACFF.toInt(), 0xFFFF92DF.toInt(), 0xFFA4FFFF.toInt(), 0xFFFFFFFF.toInt()),
+        intArrayOf(0xFF000000.toInt(), 0xFF33FF33.toInt(),
+            0xFF000000.toInt(), 0xFFFF3030.toInt(), 0xFF00FF00.toInt(), 0xFFBFFF00.toInt(),
+            0xFF00AAFF.toInt(), 0xFF00FFAA.toInt(), 0xFF00FFFF.toInt(), 0xFF88FF88.toInt(),
+            0xFF444444.toInt(), 0xFFFF5555.toInt(), 0xFF33FF33.toInt(), 0xFFDDFF33.toInt(),
+            0xFF33BBFF.toInt(), 0xFF33FFCC.toInt(), 0xFF66FFFF.toInt(), 0xFFCCFFCC.toInt()),
+        intArrayOf(0xFF000000.toInt(), 0xFF00FF00.toInt(),
+            0xFF000000.toInt(), 0xFF00FF00.toInt(), 0xFF00FF00.toInt(), 0xFF00FF00.toInt(),
+            0xFF00FF00.toInt(), 0xFF00FF00.toInt(), 0xFF00FF00.toInt(), 0xFF00FF00.toInt(),
+            0xFF00AA00.toInt(), 0xFF00FF00.toInt(), 0xFF00FF00.toInt(), 0xFF00FF00.toInt(),
+            0xFF00FF00.toInt(), 0xFF00FF00.toInt(), 0xFF00FF00.toInt(), 0xFF00FF00.toInt()),
+        intArrayOf(0xFFFDF6E3.toInt(), 0xFF2C2C2C.toInt(),
+            0xFFEEE8D5.toInt(), 0xFFD33682.toInt(), 0xFF859900.toInt(), 0xFFB58900.toInt(),
+            0xFF268BD2.toInt(), 0xFF6C71C4.toInt(), 0xFF2AA198.toInt(), 0xFF073642.toInt(),
+            0xFF93A1A1.toInt(), 0xFFDC322F.toInt(), 0xFF586E75.toInt(), 0xFF657B83.toInt(),
+            0xFF839496.toInt(), 0xFFD33682.toInt(), 0xFF93A1A1.toInt(), 0xFF002B36.toInt()),
+    )
+    private val themeNames = arrayOf("Default Dark", "Solarized Dark", "Dracula", "Matrix Green", "Classic Green", "Light Paper")
+    private fun theme() = themes[themeIdx]
+    private fun bg() = theme()[0]
+    private fun fg() = theme()[1]
+    private fun ansiColor(idx: Int, bright: Boolean): Int {
+        val base = if (bright) 10 else 2
+        return theme()[base + idx]
+    }
+    private fun ansi256(n: Int): Int {
+        return when {
+            n < 8 -> ansiColor(n, false)
+            n < 16 -> ansiColor(n - 8, true)
+            n < 232 -> {
+                val v = n - 16; val r = v / 36; val g = (v % 36) / 6; val b = v % 6
+                fun c(x: Int) = if (x == 0) 0 else 55 + x * 40
+                Color.rgb(c(r), c(g), c(b))
+            }
+            else -> { val g = (n - 232) * 10 + 8; Color.rgb(g, g, g) }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         app = Termidroid.instance
         handler = Handler(Looper.getMainLooper())
+        themeIdx = getPreferences(0).getInt("theme_idx", 0)
+        fontSize = getPreferences(0).getFloat("font_size", 13f)
 
-        theme = Termidroid.themeByName(app.prefs.getString("theme", Termidroid.THEMES[0].name))
-        fontSize = app.prefs.getFloat("font_size", 13f)
-
-        buildUi()
-        installHostHelpers()
-        createNotificationChannel()
-
-        // Handle shared text
-        if (intent?.action == Intent.ACTION_SEND && intent.type?.startsWith("text/") == true) {
-            sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
-        }
-
-        if (savedInstanceState != null) {
-            // restore open tabs (just names; process was killed)
-            val names = savedInstanceState.getStringArrayList("tab_names")
-            if (names != null) for (n in names) newTab(n, startShell = false)
-        }
-        if (tabs.isEmpty()) newTab("1", startShell = false)
-        selectTab(0)
-
-        Thread { bootstrapIfNeededAndStart() }.start()
-    }
-
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        outState.putStringArrayList("tab_names", ArrayList(tabs.map { it.name }))
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        for (t in tabs) closeTabProcess(t)
-        try { wakeLock?.release() } catch (_: Exception) {}
-    }
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        if (intent.action == Intent.ACTION_SEND && intent.type?.startsWith("text/") == true) {
-            val text = intent.getStringExtra(Intent.EXTRA_TEXT)
-            if (text != null) {
-                val w = tabs.getOrNull(currentTab)?.writer
-                if (w != null) { w.write(text); w.flush() }
-            }
-        }
-    }
-
-    // UI construction ------------------------------------------------------
-    private fun buildUi() {
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(theme.bg)
+            setBackgroundColor(bg())
         }
 
-        // Tabs bar
         tabsBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(Color.BLACK)
             setPadding(8, 8, 8, 8)
         }
-        newTabBtn = Button(this).apply {
-            text = "+"
-            textSize = 14f
-            setOnClickListener { newTab("${tabs.size + 1}", startShell = true); selectTab(tabs.size - 1) }
+        val plusBtn = Button(this).apply {
+            text = "+"; textSize = 14f
+            setOnClickListener { newTab(); selectTab(tabs.size - 1) }
         }
-        tabsBar.addView(newTabBtn, LinearLayout.LayoutParams(
+        tabsBar.addView(plusBtn, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-
-        val menuBtn = Button(this).apply {
-            text = "⋮"
-            textSize = 14f
-            setOnClickListener { v -> showMenu(v) }
+        menuBtn = Button(this).apply {
+            text = "⋮"; textSize = 14f
+            setOnClickListener { showMenu(it) }
         }
         tabsBar.addView(menuBtn, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         root.addView(tabsBar, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
-        // Output
         scrollView = ScrollView(this).apply {
             isFillViewport = true
             isVerticalScrollBarEnabled = true
-            setBackgroundColor(theme.bg)
+            setBackgroundColor(bg())
         }
         output = TextView(this).apply {
             textSize = fontSize
-            setTextColor(theme.fg)
+            setTextColor(fg())
             typeface = Typeface.MONOSPACE
             setPadding(24, 24, 24, 24)
-            movementMethod = ScrollingMovementMethod()
             setTextIsSelectable(true)
-            isVerticalScrollBarEnabled = true
+            movementMethod = ScrollingMovementMethod()
         }
         scaleDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(d: ScaleGestureDetector): Boolean {
                 fontSize *= d.scaleFactor
                 fontSize = fontSize.coerceIn(8f, 32f)
                 output.textSize = fontSize
-                app.prefs.edit().putFloat("font_size", fontSize).apply()
+                getPreferences(0).edit().putFloat("font_size", fontSize).apply()
                 return true
             }
         })
         scrollView.setOnTouchListener { _, event ->
             if (event.action == MotionEvent.ACTION_UP) {
-                scrollView.post {
+                post {
                     val child = scrollView.getChildAt(0)
                     if (child != null) {
                         val atBottom = scrollView.scrollY + scrollView.height >= child.measuredHeight - 50
@@ -228,81 +234,78 @@ class MainActivity : Activity() {
             false
         }
         scrollView.addView(output)
-        root.addView(scrollView, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        root.addView(scrollView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        // Progress
-        val progRow = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
-        progress = ProgressBar(this@MainActivity, null, android.R.attr.progressBarStyleHorizontal).apply {
-            max = 100
+        val progRow = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
         }
-        progressText = TextView(this).apply {
-            setTextColor(theme.fg); textSize = 12f; setPadding(16, 4, 16, 8)
-        }
-        progRow.addView(progress, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100 }
+        progressText = TextView(this).apply { setTextColor(fg()); textSize = 12f; setPadding(16, 4, 16, 8) }
+        progRow.addView(progress)
         progRow.addView(progressText)
         root.addView(progRow)
-        // keep a reference: use tags
         root.tag = progRow
 
-        // Input
         input = EditText(this).apply {
-            setTextColor(theme.fg)
-            setBackgroundColor(Color.TRANSPARENT)
-            setHintTextColor(Color.GRAY)
-            hint = "type a command (tap screen to focus)"
+            setTextColor(fg()); setBackgroundColor(Color.TRANSPARENT)
+            setHintTextColor(Color.GRAY); hint = "type a command"
             setSingleLine(true)
             imeOptions = EditorInfo.IME_ACTION_SEND or EditorInfo.IME_FLAG_NO_EXTRACT_UI
-            setHorizontallyScrolling(true)
             setOnEditorActionListener { _, actionId, _ ->
                 if (actionId == EditorInfo.IME_ACTION_SEND || actionId == EditorInfo.IME_NULL) {
-                    val cmd = text.toString()
-                    setText("")
-                    sendCommand(cmd)
-                    true
+                    val cmd = text.toString(); setText(""); sendCommand(cmd); true
                 } else false
             }
         }
-        root.addView(input, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        root.addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
         statusBar = TextView(this).apply {
-            textSize = 11f
-            setTextColor(Color.GRAY)
-            setPadding(16, 4, 16, 8)
+            textSize = 11f; setTextColor(Color.GRAY); setPadding(16, 4, 16, 8)
             setBackgroundColor(Color.BLACK)
         }
         root.addView(statusBar)
 
         setContentView(root)
-
-        // Click anywhere -> focus input
         scrollView.setOnClickListener { showKeyboardAndFocus() }
         output.setOnClickListener { showKeyboardAndFocus() }
 
-        updateStatus("Ready")
+        if (tabs.isEmpty()) newTab(startShell = false)
+        selectTab(0)
+
+        val shared = if (intent?.action == Intent.ACTION_SEND && intent.type?.startsWith("text/") == true)
+            intent.getStringExtra(Intent.EXTRA_TEXT) else null
+
+        Thread { bootstrapAndStart(shared) }.start()
     }
 
-    private fun showProgress(msg: String?, pct: Int) {
-        val progRow = root.tag as LinearLayout
-        runOnUiThread {
-            if (msg == null) progRow.visibility = View.GONE
-            else {
-                progRow.visibility = View.VISIBLE
-                progress.progress = pct.coerceIn(0, 100)
-                progressText.text = "$msg  ${pct}%"
+    override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
+        if (event == null) return super.dispatchKeyEvent(null)
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_VOLUME_DOWN -> { ctrlPressed = true; return true }
+                KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_DPAD_UP -> { historyPrev(); return true }
+                KeyEvent.KEYCODE_C -> if (ctrlPressed) { writeRaw(3.toChar().toString()); return true }
+                KeyEvent.KEYCODE_D -> if (ctrlPressed) { writeRaw(4.toChar().toString()); return true }
+                KeyEvent.KEYCODE_Z -> if (ctrlPressed) { writeRaw(26.toChar().toString()); return true }
+                KeyEvent.KEYCODE_L -> if (ctrlPressed) { resetCurrentTab(); return true }
+            }
+            if (ctrlPressed && event.keyCode in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z) {
+                val ch = (event.keyCode - KeyEvent.KEYCODE_A + 1).toChar()
+                writeRaw(ch.toString()); ctrlPressed = false; return true
             }
         }
+        return super.dispatchKeyEvent(event)
     }
 
-    // Tabs -----------------------------------------------------------------
-    private fun newTab(name: String, startShell: Boolean = true) {
-        val tab = Tab(name = name, parser = AnsiParser(theme))
-        tabs.add(tab)
+    // ---- Tabs ----
+    private fun newTab(name: String? = null, startShell: Boolean = true) {
+        val n = name ?: "${tabs.size + 1}"
+        val t = Tab(name = n)
+        t.fg = fg(); t.bg = bg()
+        tabs.add(t)
         val btn = Button(this).apply {
-            text = name
-            textSize = 12f
-            tag = tab
+            text = n; textSize = 12f; tag = t
             setOnClickListener { selectTab(tabs.indexOf(tag as Tab)) }
             setOnLongClickListener {
                 val idx = tabs.indexOf(tag as Tab)
@@ -315,12 +318,7 @@ class MainActivity : Activity() {
         }
         tabsBar.addView(btn, tabsBar.childCount - 1, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        if (startShell) startShellFor(tab)
-    }
-
-    private fun tabButtonAt(tabIdx: Int): Button? {
-        // child 0 = newTabBtn (+), children 1..N = tab buttons, child N+1 = menuBtn (⋮)
-        return tabsBar.getChildAt(tabIdx + 1) as? Button
+        if (startShell && app.isBootstrapped()) startShellFor(t)
     }
 
     private fun selectTab(idx: Int) {
@@ -331,72 +329,31 @@ class MainActivity : Activity() {
         output.textSize = fontSize
         if (!userScrolledUp) scrollView.post { scrollView.fullScroll(View.FOCUS_DOWN) }
         for (i in tabs.indices) {
-            tabButtonAt(i)?.alpha = if (i == idx) 1.0f else 0.6f
+            val b = tabsBar.getChildAt(i + 1) as? Button
+            b?.alpha = if (i == idx) 1.0f else 0.6f
         }
-        updateStatus("Tab ${t.name}  •  cwd=${t.cwd}  •  last=${if (t.lastExit == 0) "ok" else "exit=${t.lastExit}"}")
+        updateStatus()
     }
 
     private fun closeTab(idx: Int) {
         if (tabs.size <= 1) return
-        closeTabProcess(tabs[idx])
-        tabs.removeAt(idx)
-        tabsBar.removeViewAt(idx + 1) // offset for +tab button at index 0
-        if (currentTab >= tabs.size) currentTab = tabs.size - 1
-        for (i in tabs.indices) tabButtonAt(i)?.text = "${i + 1}"
-        selectTab(currentTab)
-    }
-
-    private fun closeTabProcess(t: Tab) {
+        val t = tabs[idx]
         try { t.writer?.close() } catch (_: Exception) {}
         try { t.reader?.close() } catch (_: Exception) {}
         try { t.process?.destroy() } catch (_: Exception) {}
+        tabs.removeAt(idx); tabsBar.removeViewAt(idx + 1)
+        if (currentTab >= tabs.size) currentTab = tabs.size - 1
+        for (i in tabs.indices) (tabsBar.getChildAt(i + 1) as? Button)?.text = "${i + 1}"
+        selectTab(currentTab)
     }
 
-    override fun dispatchKeyEvent(event: android.view.KeyEvent?): Boolean {
-        if (event == null) return super.dispatchKeyEvent(null)
-        // Hardware/hard keyboard support — let us catch Ctrl/arrow/vol up/down before EditText eats them
-        if (event.action == android.view.KeyEvent.ACTION_DOWN) {
-            val ctrlHeld = (event.metaState and android.view.KeyEvent.META_CTRL_ON) != 0
-            when (event.keyCode) {
-                android.view.KeyEvent.KEYCODE_VOLUME_DOWN -> {
-                    ctrlPressed = true; return true
-                }
-                android.view.KeyEvent.KEYCODE_VOLUME_UP -> {
-                    if (!ctrlPressed) { historyPrev(); return true }
-                }
-                android.view.KeyEvent.KEYCODE_DPAD_UP -> { historyPrev(); return true }
-                android.view.KeyEvent.KEYCODE_ENTER, android.view.KeyEvent.KEYCODE_NUMPAD_ENTER -> {
-                    // handled by editor action
-                }
-                android.view.KeyEvent.KEYCODE_C -> {
-                    if (ctrlPressed) { writeRaw(3.toChar().toString()); ctrlPressed = false; return true }
-                }
-                android.view.KeyEvent.KEYCODE_D -> {
-                    if (ctrlPressed) { writeRaw(4.toChar().toString()); ctrlPressed = false; return true }
-                }
-                android.view.KeyEvent.KEYCODE_Z -> {
-                    if (ctrlPressed) { writeRaw(26.toChar().toString()); ctrlPressed = false; return true }
-                }
-                android.view.KeyEvent.KEYCODE_L -> {
-                    if (ctrlPressed) { resetCurrentTab(); ctrlPressed = false; return true }
-                }
-            }
-            // General Ctrl+letter for other keys
-            if (ctrlPressed && event.keyCode in android.view.KeyEvent.KEYCODE_A..android.view.KeyEvent.KEYCODE_Z) {
-                val ch = (event.keyCode - android.view.KeyEvent.KEYCODE_A + 1).toChar()
-                writeRaw(ch.toString())
-                ctrlPressed = false
-                return true
-            }
-        }
-        if (event.action == android.view.KeyEvent.ACTION_UP &&
-            event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN) {
-            // released
-        }
-        return super.dispatchKeyEvent(event)
+    // ---- Keyboard ----
+    private fun showKeyboardAndFocus() {
+        input.requestFocus()
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.showSoftInput(input, 0)
     }
 
-    // Keyboard / input -----------------------------------------------------
     private fun historyPrev() {
         val t = tabs.getOrNull(currentTab) ?: return
         if (t.history.isEmpty()) return
@@ -414,227 +371,179 @@ class MainActivity : Activity() {
     private fun sendCommand(cmd: String) {
         val t = tabs.getOrNull(currentTab) ?: return
         if (cmd.isBlank()) { writeRaw("\n"); return }
-        if (cmd.startsWith("tdpkg ") || cmd == "tdpkg") {
-            // handle built-in 'tdpkg' by writing through shell
+        // Built-in commands handled locally
+        when {
+            cmd == "tdhelp" || cmd == "help" -> {
+                appendToCurrent(t, "Termidroid v${Termidroid.VERSION}\n" +
+                    "  tdhelp/help         this help\n" +
+                    "  tdreset             clear screen\n" +
+                    "  tdtheme <n>         switch theme 0-5\n" +
+                    "  tdbackup            backup rootfs to /sdcard\n" +
+                    "  tdqemu <arch>       launch qemu-system-<arch>\n" +
+                    "  tdabout             about Termidroid\n" +
+                    "  tdpkg ...           run Termidroid package manager\n\n", ansiColor(6, false))
+                writeRaw("\n"); return
+            }
+            cmd == "tdreset" -> { resetCurrentTab(); writeRaw("\n"); return }
+            cmd.startsWith("tdtheme ") -> {
+                val n = cmd.removePrefix("tdtheme ").trim().toIntOrNull()
+                if (n != null && n in themes.indices) { themeIdx = n; applyTheme(); getPreferences(0).edit().putInt("theme_idx", n).apply() }
+                writeRaw("\n"); return
+            }
+            cmd == "tdabout" -> { showAbout(); writeRaw("\n"); return }
+            cmd == "tdbackup" -> { doBackup(); writeRaw("\n"); return }
+            cmd.startsWith("tdqemu ") -> {
+                val tgt = cmd.removePrefix("tdqemu ").trim()
+                writeRaw(cmd + "\n")
+                sendCommand("tdpkg install qemu-system-$tgt && qemu-system-$tgt -nographic -m 512")
+                return
+            }
         }
-        t.history.add(cmd)
-        t.histIdx = t.history.size
+        t.history.add(cmd); t.histIdx = t.history.size
         writeRaw(cmd + "\n")
         showKeyboardAndFocus()
     }
 
-    private fun showKeyboardAndFocus() {
-        input.visibility = View.VISIBLE
-        input.requestFocus()
-        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-        imm.showSoftInput(input, 0)
+    private fun applyTheme() {
+        root.setBackgroundColor(bg())
+        scrollView.setBackgroundColor(bg())
+        output.setTextColor(fg())
+        input.setTextColor(fg())
     }
 
-    // Bootstrap / shell ----------------------------------------------------
-    private fun bootstrapIfNeededAndStart() {
+    private fun resetCurrentTab() {
+        val t = tabs.getOrNull(currentTab) ?: return
+        val spans = t.buf.getSpans(0, t.buf.length, Any::class.java)
+        for (s in spans) t.buf.removeSpan(s)
+        t.buf.clear()
+        output.text = t.buf
+    }
+
+    // ---- Bootstrap ----
+    private fun bootstrapAndStart(sharedText: String?) {
         if (!app.isBootstrapped() && !bootstrapping) {
             bootstrapping = true
             try { bootstrap() } catch (t: Throwable) {
-                post { appendLine("Bootstrap error: ${t.message}", theme.red); t.printStackTrace() }
+                post { appendLine("Bootstrap error: ${t.message}", ansiColor(1, true)); t.printStackTrace() }
             }
             bootstrapping = false
         }
-        installTdpkg()
-        installTermidroidHelper()
-        // start shell in all existing tabs
+        installHelpers()
         for (t in tabs) if (t.process == null) startShellFor(t)
-
         post {
             appendLine()
-            appendLine("Termidroid v${Termidroid.VERSION} — ${app.detectArch()}", theme.cyan)
+            appendLine("Termidroid v${Termidroid.VERSION} — ${app.detectArch()}", ansiColor(6, false))
             if (app.isBootstrapped()) {
-                appendLine("Alpine Linux via proot (no root required).", theme.green)
-                appendLine("Type 'tdpkg install <pkg>' to install software.", theme.yellow)
-                appendLine("Try: tdpkg install python3 git gcc g++ make cmake nodejs", theme.brightBlack)
+                appendLine("Alpine Linux via proot (no root required).", ansiColor(2, false))
+                appendLine("Type 'tdpkg install <pkg>' to install software.", ansiColor(3, false))
+                appendLine("Try: tdpkg install python3 git gcc g++ make cmake nodejs", Color.GRAY)
+                appendLine("Pinch to zoom • vol-down+letter=Ctrl • vol-up=history • ⋮ for menu", Color.GRAY)
+                appendLine("Theme: ${themeNames[themeIdx]}  • type tdtheme 0-5 to change", Color.GRAY)
+                if (app.isRootAvailable()) appendLine("Root detected — type 'su' for a root shell.", ansiColor(2, false))
             } else {
-                appendLine("Running Android system shell (bootstrap failed — see errors).", theme.red)
+                appendLine("Running Android system shell (bootstrap failed).", ansiColor(1, true))
             }
-            if (app.isRootAvailable()) appendLine("Root detected — type 'su' for root shell.", theme.green)
-            appendLine("Pinch to zoom font • vol-down+letter = Ctrl • vol-up = history", theme.brightBlack)
             appendLine()
+            if (sharedText != null) { input.setText(sharedText); input.setSelection(sharedText.length) }
             showKeyboardAndFocus()
         }
-
-        // if we received shared text, paste it
-        sharedText?.let { post { input.setText(it); input.setSelection(it.length) } }
     }
 
     private fun bootstrap() {
-        post { appendLine("Setting up Termidroid for the first time...", theme.cyan) }
-        acquireWakeLock("bootstrap")
+        post { appendLine("Setting up Termidroid for the first time...", ansiColor(6, false)) }
+        acquireWakeLock()
         try {
-            // proot
             val proot = app.prootFile
-            val prootUrl = app.prootUrl()
-            downloadWithProgress(prootUrl, proot, "proot (${app.detectArch()})", 0, 20)
+            downloadWithProgress(app.prootUrl(), proot, "proot ${app.detectArch()}", 0, 20)
             proot.setExecutable(true)
-
-            // alpine rootfs
-            val tarball = File(app.tmpDir, "alpine-${app.detectArch()}.tgz")
-            val alpineUrl = app.alpineUrl()
-            downloadWithProgress(alpineUrl, tarball, "Alpine rootfs ${app.detectArch()}", 20, 85)
-
-            post { showProgress("Extracting rootfs...", 90) }
-            extractTarGz(tarball, app.rootfsDir)
-
-            // Config
+            val tarball = File(app.tmpDir, "alpine.tgz")
+            downloadWithProgress(app.alpineUrl(), tarball, "Alpine rootfs ${app.detectArch()}", 20, 85)
+            post { setProgress("Extracting rootfs...", 90) }
+            val rc = Runtime.getRuntime().exec(
+                arrayOf("tar", "-xzf", tarball.absolutePath, "-C", app.rootfsDir.absolutePath)
+            ).waitFor()
+            if (rc != 0) error("tar failed rc=$rc")
             File(app.rootfsDir, "etc/resolv.conf").writeText("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
             File(app.rootfsDir, "etc/profile.d/tdroid.sh").writeText(
-                "# Termidroid profile\n" +
-                "alias ll='ls -la'\n" +
-                "alias ls='ls --color=auto'\n" +
-                "alias grep='grep --color=auto'\n" +
-                "export PATH=\"/usr/local/host-bin:$PATH\"\n" +
-                "# cwd tracking + exit code prompt\n" +
-                "__td_prompt() {\n" +
-                "  local ec=\$?\n" +
-                "  printf '\\033]7;file://%s\\007' \"\$PWD\"\n" +
-                "  PS1='\\[\\033[36m\\][termidroid]\\[\\033[0m\\] \\[\\033[33m\\]\\w\\[\\033[0m\\] '\n" +
-                "  if [ \$ec -eq 0 ]; then\n" +
-                "    PS1=\"\${PS1}\"'\\[\\033[32m\\]\\$\\[\\033[0m\\] '\n" +
-                "  else\n" +
-                "    PS1=\"\${PS1}\"'\\[\\033[31m\\}[\\$ec] \\$\\[\\033[0m\\] '\n" +
-                "  fi\n" +
-                "}\n" +
+                "alias ll='ls -la'\nalias ls='ls --color=auto'\nalias grep='grep --color=auto'\n" +
+                "__td_prompt() {\n  local ec=\$?\n  printf '\\033]7;%s\\007' \"\$PWD\"\n" +
+                "  if [ \$ec -eq 0 ]; then PS1='\\[\\033[36m\\][termidroid]\\[\\033[0m\\] \\[\\033[33m\\]\\w\\[\\033[0m\\] \\[\\033[32m\\]#\\[\\033[0m\\] '\n" +
+                "  else PS1='\\[\\033[36m\\][termidroid]\\[\\033[0m\\] \\[\\033[33m\\]\\w\\[\\033[0m\\] \\[\\033[31m\\}[\$ec]\\[\\033[0m\\] # '; fi\n}\n" +
                 "PROMPT_COMMAND=__td_prompt\n"
             )
             tarball.delete()
-            post { showProgress(null, 100); appendLine("Bootstrap complete.", theme.green) }
-        } finally {
-            releaseWakeLock()
-        }
+            post { setProgress(null, 100); appendLine("Bootstrap complete.", ansiColor(2, false)) }
+        } finally { releaseWakeLock() }
     }
 
-    private fun downloadWithProgress(url: String, dest: File, label: String, startPct: Int, endPct: Int) {
-        var attempt = 0
-        val maxAttempts = 3
-        while (attempt < maxAttempts) {
-            attempt++
+    private fun downloadWithProgress(url: String, dest: File, label: String, sp: Int, ep: Int) {
+        for (attempt in 1..3) {
             try {
-                post { appendLine("Downloading $label...", theme.brightBlack) }
+                post { appendLine("Downloading $label...", Color.GRAY) }
                 val conn = URL(url).openConnection() as HttpURLConnection
-                conn.connectTimeout = 30000
-                conn.readTimeout = 600000
+                conn.connectTimeout = 30000; conn.readTimeout = 600000
                 conn.instanceFollowRedirects = true
-                // Resume support
-                if (dest.exists() && dest.length() > 0) {
-                    conn.setRequestProperty("Range", "bytes=${dest.length()}-")
-                }
+                if (dest.exists() && dest.length() > 0) conn.setRequestProperty("Range", "bytes=${dest.length()}-")
                 conn.connect()
                 val append = conn.responseCode == 206
-                val code = conn.responseCode
-                if (code !in 200..299) error("HTTP $code")
-                val total = conn.contentLengthLong.let { if (it > 0) it + (if (append) dest.length() else 0) else it }
+                if (conn.responseCode !in 200..299) error("HTTP ${conn.responseCode}")
+                val existing = if (append) dest.length() else 0L
+                val total = if (conn.contentLengthLong > 0) conn.contentLengthLong + existing else -1L
                 dest.parentFile?.mkdirs()
                 conn.inputStream.buffered().use { inp ->
                     FileOutputStream(dest, append).use { out ->
-                        val buf = ByteArray(65536)
-                        var done = if (append) dest.length() else 0L
+                        val buf = ByteArray(65536); var done = existing
                         while (true) {
-                            val n = inp.read(buf)
-                            if (n < 0) break
-                            out.write(buf, 0, n)
-                            done += n
+                            val n = inp.read(buf); if (n < 0) break
+                            out.write(buf, 0, n); done += n
                             if (total > 0) {
-                                val pct = startPct + ((done * (endPct - startPct)) / total).toInt()
-                                post { showProgress("Downloading $label", pct) }
+                                val pct = sp + ((done * (ep - sp)) / total).toInt()
+                                post { setProgress("Downloading $label", pct) }
                             }
                         }
                     }
                 }
                 conn.disconnect()
-                post { showProgress("Downloaded $label", endPct) }
+                post { setProgress("Downloaded $label", ep) }
                 return
             } catch (t: Throwable) {
-                post { appendLine("Download attempt $attempt failed: ${t.message}", theme.yellow) }
-                if (attempt == maxAttempts) throw t
+                post { appendLine("Attempt $attempt failed: ${t.message}", ansiColor(3, false)) }
+                if (attempt == 3) throw t
                 Thread.sleep(2000)
             }
         }
     }
 
-    private fun extractTarGz(tgz: File, dest: File) {
-        dest.mkdirs()
-        // Prefer host tar; fall back to Java GZIP + copy raw into dest (won't be a tar extract)
-        val rc = try {
-            Runtime.getRuntime().exec(arrayOf("tar", "-xzf", tgz.absolutePath, "-C", dest.absolutePath)).waitFor()
-        } catch (_: Exception) { -1 }
-        if (rc != 0) {
-            // Fallback: manual gzip-only extraction if tar fails (rare) — for v0.4 we surface the error
-            post { appendLine("System tar failed (rc=$rc); using bundled extractor...", theme.yellow) }
-            tgz.inputStream().buffered().use { zin ->
-                java.util.zip.GZIPInputStream(zin).use { gz ->
-                    // Without a real tar reader we can't unpack a tar here.
-                    // Save uncompressed data for a future bundled tar reader.
-                    val raw = File(app.tmpDir, "rootfs.tar")
-                    raw.outputStream().use { it.write(gz.readBytes()) }
-                    post { appendLine("Saved raw tar to ${raw.absolutePath}; extraction needs tar.", theme.red) }
-                }
-            }
-            throw RuntimeException("tar extraction failed on this device")
+    private fun setProgress(msg: String?, pct: Int) {
+        val row = root.tag as LinearLayout
+        if (msg == null) row.visibility = View.GONE else {
+            row.visibility = View.VISIBLE
+            progress.progress = pct.coerceIn(0, 100)
+            progressText.text = "$msg  ${pct.coerceIn(0,100)}%"
         }
     }
 
-    private fun installTdpkg() {
-        copyAsset("tdpkg", app.tdpkgFile)
-        // also place into rootfs /usr/bin
-        if (app.isBootstrapped()) {
-            val dst = File(app.rootfsDir, "usr/bin/tdpkg")
-            app.tdpkgFile.copyTo(dst, overwrite = true)
-            dst.setExecutable(true)
-        }
-    }
-
-    private fun installTermidroidHelper() {
-        val script = """#!/bin/sh
-# Termidroid in-proot helper
+    private fun installHelpers() {
+        assets.open("tdpkg").use { i -> FileOutputStream(app.tdpkgFile).use { o -> i.copyTo(o) } }
+        app.tdpkgFile.setExecutable(true)
+        val helper = """#!/bin/sh
 set -e
-cmd="${'$'}1"; shift || true
-case "${'$'}cmd" in
-  qemu)
-    if ! command -v "qemu-system-${'$'}{1:-x86_64}" >/dev/null 2>&1; then
-      echo "qemu-system-${'$'}{1:-x86_64} not installed. Run:"
-      echo "  tdpkg install qemu-system-${'$'}{1:-x86_64}"
-      exit 1
-    fi
-    exec "qemu-system-${'$'}{1:-x86_64}" "$@" ;;
-  backup)
-    out="/mnt/sdcard/termidroid-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
-    echo "Backing up rootfs to ${'$'}out ..."
-    tar -czf "${'$'}out" -C / . 2>/dev/null && echo "Backup: ${'$'}out" ;;
-  restore)
-    echo "Use the Termidroid UI to restore a backup." ;;
-  version)
-    echo "Termidroid v${Termidroid.VERSION}" ;;
-  shell|sh|"")
-    exec /bin/sh --login ;;
-  *)
-    exec "${'$'}cmd" "$@" ;;
+cmd="\$1"; shift || true
+case "\$cmd" in
+  qemu) exec qemu-system-"${'$'}{1:-x86_64}" "$@" ;;
+  backup) fn=/mnt/sdcard/termidroid-backup-$(date +%Y%m%d-%H%M%S).tgz
+          echo "Backing up to \$fn"; tar -czf "\$fn" -C / . 2>/dev/null && echo "OK: \$fn" ;;
+  version) echo "Termidroid v${Termidroid.VERSION}" ;;
+  ""|"") exec /bin/sh --login ;;
+  *) exec "\$cmd" "$@" ;;
 esac
 """
-        app.termidroidShFile.writeText(script)
-        app.termidroidShFile.setExecutable(true)
+        app.termidroidShFile.writeText(helper); app.termidroidShFile.setExecutable(true)
         if (app.isBootstrapped()) {
-            val dst = File(app.rootfsDir, "usr/bin/termidroid")
-            app.termidroidShFile.copyTo(dst, overwrite = true)
-            dst.setExecutable(true)
-        }
-    }
-
-    private fun copyAsset(name: String, dest: File) {
-        assets.open(name).use { inp -> FileOutputStream(dest).use { out -> inp.copyTo(out) } }
-        dest.setExecutable(true)
-    }
-
-    private fun installHostHelpers() {
-        // Place tdpkg/termidroid into host bin dir even before bootstrap
-        if (app.assets.list("")?.contains("tdpkg") == true) {
-            try { copyAsset("tdpkg", app.tdpkgFile) } catch (_: Exception) {}
+            app.tdpkgFile.copyTo(File(app.rootfsDir, "usr/bin/tdpkg"), overwrite = true)
+            File(app.rootfsDir, "usr/bin/tdpkg").setExecutable(true)
+            app.termidroidShFile.copyTo(File(app.rootfsDir, "usr/bin/termidroid"), overwrite = true)
+            File(app.rootfsDir, "usr/bin/termidroid").setExecutable(true)
         }
     }
 
@@ -642,37 +551,27 @@ esac
         val bootstrapped = app.isBootstrapped()
         val cmd: List<String>
         val env: MutableMap<String, String>
-        val workdir: File?
-        if (bootstrapped) {
-            cmd = app.loginCmd()
-            env = mutableMapOf()
-            workdir = app.homeDir
-        } else {
+        val wd: File?
+        if (bootstrapped) { cmd = app.loginCmd(); env = mutableMapOf(); wd = app.homeDir }
+        else {
             cmd = listOf("/system/bin/sh")
-            env = mutableMapOf(
-                "HOME" to filesDir.absolutePath,
-                "PATH" to "/system/bin:/system/xbin",
-                "TERM" to "xterm-256color",
-                "TMPDIR" to cacheDir.absolutePath,
-            )
-            workdir = filesDir
+            env = mutableMapOf("HOME" to filesDir.absolutePath, "PATH" to "/system/bin:/system/xbin",
+                "TERM" to "xterm-256color", "TMPDIR" to cacheDir.absolutePath)
+            wd = filesDir
         }
         val pb = ProcessBuilder(cmd).redirectErrorStream(true)
         val penv = pb.environment()
-        for ((k, v) in env) penv[k] = v
-        if (workdir != null) pb.directory(workdir)
+        for ((k,v) in env) penv[k] = v
+        if (wd != null) pb.directory(wd)
         val p = pb.start()
-        t.process = p
-        t.reader = BufferedReader(InputStreamReader(p.inputStream))
+        t.process = p; t.reader = BufferedReader(InputStreamReader(p.inputStream))
         t.writer = OutputStreamWriter(p.outputStream)
-        t.readerThread = Thread { readerLoop(t) }.apply { isDaemon = true; start() }
-        // Reap exit
+        Thread { readerLoop(t) }.apply { isDaemon = true; start() }
         Thread {
-            val rc = p.waitFor()
-            t.lastExit = rc
+            val rc = p.waitFor(); t.lastExit = rc
             post {
-                appendTo(t, "\n[process exited with code $rc]\n", theme.brightBlack)
-                updateStatusFor(t)
+                ansiAppend(t, "\n[process exited with code $rc]\n", Color.GRAY)
+                updateStatus()
             }
         }.apply { isDaemon = true; start() }
     }
@@ -680,128 +579,157 @@ esac
     private fun readerLoop(t: Tab) {
         try {
             val buf = CharArray(4096)
+            val cwdRe = Regex("\u001B\\]7;([^\u0007]*)\u0007")
             while (true) {
                 val n = t.reader?.read(buf) ?: break
                 if (n < 0) break
-                val chunk = String(buf, 0, n)
-                    .replace("\u0000", "")
-                // Detect cwd via magic escape: we ask the shell to print OSC 7 ; <cwd> BEL after each prompt
-                val cwdRegex = Regex("\u001B\\]7;file://[^/\u0007]*([^\u0007]*)\u0007")
-                val mr = cwdRegex.find(chunk)
-                if (mr != null) {
-                    t.cwd = mr.groupValues[1].ifEmpty { t.cwd }
-                    post { updateStatusFor(t) }
-                }
-                val clean = chunk.replace(cwdRegex, "")
-                val spanned = t.parser.feed(clean)
-                post {
-                    appendTo(t, spanned)
-                    if (t === tabs.getOrNull(currentTab) && !userScrolledUp) {
-                        scrollView.post { scrollView.fullScroll(View.FOCUS_DOWN) }
-                    }
-                }
+                var chunk = String(buf, 0, n).replace("\u0000", "")
+                val mr = cwdRe.find(chunk)
+                if (mr != null) { t.cwd = mr.groupValues[1]; post { updateStatus() } }
+                chunk = chunk.replace(cwdRe, "")
+                ansiAppend(t, chunk)
             }
         } catch (_: Exception) {}
     }
 
-    // Output helpers -------------------------------------------------------
-    private fun appendLine(text: String = "", color: Int = theme.fg) {
-        val t = tabs.getOrNull(currentTab) ?: return
-        val s = if (color == theme.fg) SpannableStringBuilder(text + "\n") else {
-            val sb = SpannableStringBuilder(text)
-            sb.setSpan(android.text.style.ForegroundColorSpan(color), 0, sb.length,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            sb.append("\n")
+    // ---- ANSI parsing ----
+    private fun ansiAppend(t: Tab, text: String) {
+        var i = 0
+        val out = SpannableStringBuilder()
+        val segStart = t.buf.length
+        while (i < text.length) {
+            val ch = text[i]
+            if (ch == '\u001B' && i + 1 < text.length && text[i + 1] == '[') {
+                // flush current run
+                flushRun(t, out)
+                i += 2
+                val sb = StringBuilder()
+                while (i < text.length && (text[i].isDigit() || text[i] == ';')) { sb.append(text[i]); i++ }
+                if (i < text.length) {
+                    val final = text[i]; i++
+                    if (final == 'm') applySgr(t, sb.toString())
+                    // other CSI sequences ignored
+                }
+                continue
+            }
+            when (ch) {
+                '\r' -> { flushRun(t, out); }
+                '\u0008' -> { flushRun(t, out)
+                    if (t.buf.isNotEmpty()) t.buf.delete(t.buf.length - 1, t.buf.length)
+                    if (t === tabs.getOrNull(currentTab)) output.text = t.buf }
+                '\n' -> { out.append('\n'); flushRun(t, out) }
+                '\u0007', '\u0000' -> { }
+                else -> out.append(ch)
+            }
+            i++
         }
-        appendTo(t, s)
+        flushRun(t, out)
+        post {
+            if (t === tabs.getOrNull(currentTab)) {
+                if (!userScrolledUp) scrollView.post { scrollView.fullScroll(View.FOCUS_DOWN) }
+            }
+        }
     }
 
-    private fun appendTo(t: Tab, text: CharSequence, color: Int? = null) {
-        val span: CharSequence = if (color != null) {
-            val sb = SpannableStringBuilder(text)
-            sb.setSpan(android.text.style.ForegroundColorSpan(color), 0, sb.length,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            sb
-        } else text
-        t.buf.append(span)
-        // cap buf size
-        if (t.buf.length > 200_000) t.buf.delete(0, t.buf.length - 150_000)
-        if (t === tabs.getOrNull(currentTab)) {
-            output.append(span)
+    private fun flushRun(t: Tab, out: SpannableStringBuilder) {
+        if (out.isEmpty()) return
+        val start = t.buf.length
+        t.buf.append(out)
+        val effFg = if (t.inverse) t.bg else t.fg
+        val effBg = if (t.inverse) t.fg else t.bg
+        t.buf.setSpan(ForegroundColorSpan(effFg), start, t.buf.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        if (effBg != bg()) t.buf.setSpan(BackgroundColorSpan(effBg), start, t.buf.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        if (t.bold) t.buf.setSpan(StyleSpan(Typeface.BOLD), start, t.buf.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        if (t.underline) t.buf.setSpan(UnderlineSpan(), start, t.buf.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        out.clear()
+        if (t.buf.length > 200000) t.buf.delete(0, t.buf.length - 150000)
+        if (t === tabs.getOrNull(currentTab)) output.append(t.buf.subSequence(start, t.buf.length))
+    }
+
+    private fun applySgr(t: Tab, params: String) {
+        val parts = if (params.isEmpty()) listOf(0) else
+            params.split(';').mapNotNull { runCatching { it.toInt() }.getOrNull() }
+        var i = 0
+        while (i < parts.size) {
+            when (val p = parts[i]) {
+                0 -> { t.fg = fg(); t.bg = bg(); t.bold = false; t.underline = false; t.inverse = false }
+                1 -> t.bold = true
+                4 -> t.underline = true
+                7 -> t.inverse = true
+                22 -> t.bold = false
+                24 -> t.underline = false
+                27 -> t.inverse = false
+                39 -> t.fg = fg()
+                49 -> t.bg = bg()
+                in 30..37 -> t.fg = ansiColor(p - 30, false)
+                in 40..47 -> t.bg = ansiColor(p - 40, false)
+                in 90..97 -> t.fg = ansiColor(p - 90, true)
+                in 100..107 -> t.bg = ansiColor(p - 100, true)
+                38 -> if (i + 2 < parts.size && parts[i + 1] == 5) { t.fg = ansi256(parts[i + 2]); i += 2 }
+                48 -> if (i + 2 < parts.size && parts[i + 1] == 5) { t.bg = ansi256(parts[i + 2]); i += 2 }
+            }
+            i++
         }
+    }
+
+    private fun appendToCurrent(t: Tab, text: String, color: Int) {
+        val sb = SpannableStringBuilder(text)
+        sb.setSpan(ForegroundColorSpan(color), 0, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        t.buf.append(sb)
+        if (t === tabs.getOrNull(currentTab)) output.append(sb)
+    }
+
+    private fun appendLine(text: String = "", color: Int = fg()) {
+        appendToCurrent(tabs.getOrNull(currentTab) ?: return, text + "\n", color)
     }
 
     private fun post(block: () -> Unit) = handler.post(block)
 
-    private fun updateStatusFor(t: Tab) {
-        if (t !== tabs.getOrNull(currentTab)) return
-        updateStatus("Tab ${t.name}  •  cwd=${t.cwd}  •  ${if (t.lastExit == 0) "ok" else "exit=${t.lastExit}"}")
+    private fun updateStatus() {
+        val t = tabs.getOrNull(currentTab) ?: return
+        statusBar.text = "Tab ${t.name}  •  cwd=${t.cwd}  •  ${if (t.lastExit == 0) "ok" else "exit=${t.lastExit}"}  •  ${themeNames[themeIdx]}"
     }
 
-    private fun updateStatus(s: String) = runOnUiThread { statusBar.text = s }
-
-    // Menu / features ------------------------------------------------------
+    // ---- Menu features ----
     private fun showMenu(v: View) {
-        val popup = PopupMenu(this, v)
-        val m = popup.menu
-        m.add(0, 1, 0, "New tab")
-        m.add(0, 2, 0, "Package manager…")
-        m.add(0, 3, 0, "Themes")
-        m.add(0, 4, 0, "Font size +")
-        m.add(0, 5, 0, "Font size -")
-        m.add(0, 6, 0, "Backup rootfs")
-        m.add(0, 7, 0, "Send Ctrl-C")
-        m.add(0, 8, 0, "Reset terminal")
-        m.add(0, 9, 0, "Launch QEMU…")
-        m.add(0, 10, 0, "Root / Shizuku")
-        m.add(0, 11, 0, "About")
-        popup.setOnMenuItemClickListener { item ->
+        val items = arrayOf(
+            "New tab", "Package manager…", "Themes", "Font size +", "Font size -",
+            "Backup rootfs", "Send Ctrl-C", "Reset terminal", "Launch QEMU…",
+            "Root / Shizuku", "About")
+        val m = android.widget.PopupMenu(this, v)
+        items.forEachIndexed { idx, s -> m.menu.add(0, idx, idx, s) }
+        m.setOnMenuItemClickListener { item ->
             when (item.itemId) {
-                1 -> { newTab("${tabs.size + 1}", startShell = true); selectTab(tabs.size - 1) }
-                2 -> showPkgUi()
-                3 -> showThemePicker()
-                4 -> { fontSize = (fontSize + 1f).coerceAtMost(32f); output.textSize = fontSize; app.prefs.edit().putFloat("font_size", fontSize).apply() }
-                5 -> { fontSize = (fontSize - 1f).coerceAtLeast(8f); output.textSize = fontSize; app.prefs.edit().putFloat("font_size", fontSize).apply() }
-                6 -> doBackup()
-                7 -> writeRaw(3.toChar().toString())
-                8 -> resetCurrentTab()
-                9 -> showQemuLauncher()
-                10 -> showRootInfo()
-                11 -> showAbout()
+                0 -> { newTab(); selectTab(tabs.size - 1) }
+                1 -> showPkgUi()
+                2 -> showThemePicker()
+                3 -> { fontSize = (fontSize + 1f).coerceAtMost(32f); output.textSize = fontSize
+                    getPreferences(0).edit().putFloat("font_size", fontSize).apply() }
+                4 -> { fontSize = (fontSize - 1f).coerceAtLeast(8f); output.textSize = fontSize
+                    getPreferences(0).edit().putFloat("font_size", fontSize).apply() }
+                5 -> doBackup()
+                6 -> writeRaw(3.toChar().toString())
+                7 -> resetCurrentTab()
+                8 -> showQemuLauncher()
+                9 -> showRootInfo()
+                10 -> showAbout()
             }
             true
         }
-        popup.show()
-    }
-
-    private fun resetCurrentTab() {
-        val t = tabs.getOrNull(currentTab) ?: return
-        t.buf.clearSpans()
-        t.buf.replace(0, t.buf.length, "")
-        t.parser.reset()
-        output.text = t.buf
+        m.show()
     }
 
     private fun showPkgUi() {
-        val categories = arrayOf(
-            "Featured: python3 gcc g++ make git",
-            "Languages: python3 nodejs ruby go rust",
-            "Build: cmake ninja autoconf automake",
-            "Editors: nano vim neovim",
-            "Net: curl wget openssh nmap",
-            "QEMU: qemu-system-x86_64 qemu-system-aarch64",
-            "Search package…",
-            "Upgrade all (tdpkg upgrade)",
-        )
-        AlertDialog.Builder(this)
-            .setTitle("tdpkg — Termidroid packages")
-            .setItems(categories) { _, which ->
+        val cats = arrayOf("python3 gcc g++ make git", "python3 nodejs", "cmake ninja", "nano",
+            "curl wget nmap", "qemu-system-x86_64 qemu-system-aarch64", "Search…", "Upgrade all")
+        AlertDialog.Builder(this).setTitle("tdpkg")
+            .setItems(cats) { _, which ->
                 val cmd = when (which) {
                     0 -> "tdpkg install python3 gcc g++ make git"
                     1 -> "tdpkg install python3 nodejs"
-                    2 -> "tdpkg install cmake ninja autoconf automake"
+                    2 -> "tdpkg install cmake ninja"
                     3 -> "tdpkg install nano"
-                    4 -> "tdpkg install curl wget openssh nmap"
+                    4 -> "tdpkg install curl wget nmap"
                     5 -> "tdpkg install qemu-system-x86_64 qemu-system-aarch64"
                     6 -> null
                     7 -> "tdpkg upgrade"
@@ -809,111 +737,67 @@ esac
                 }
                 if (cmd != null) sendCommand(cmd)
                 else {
-                    val et = EditText(this).apply { hint = "package name" }
-                    AlertDialog.Builder(this).setTitle("Search package")
-                        .setView(et)
-                        .setPositiveButton("Search") { _, _ -> sendCommand("tdpkg search ${et.text}") }
+                    val et = EditText(this).apply { hint = "package" }
+                    AlertDialog.Builder(this).setTitle("Search").setView(et)
+                        .setPositiveButton("Go") { _, _ -> sendCommand("tdpkg search ${et.text}") }
                         .setNegativeButton("Cancel", null).show()
                 }
             }.show()
     }
 
     private fun showThemePicker() {
-        val names = Termidroid.THEMES.map { it.name }.toTypedArray()
-        val cur = Termidroid.THEMES.indexOfFirst { it.name == theme.name }.coerceAtLeast(0)
-        AlertDialog.Builder(this).setTitle("Choose theme")
-            .setSingleChoiceItems(names, cur) { dlg, which ->
-                theme = Termidroid.THEMES[which]
-                app.prefs.edit().putString("theme", theme.name).apply()
-                applyTheme()
-                dlg.dismiss()
+        AlertDialog.Builder(this).setTitle("Theme")
+            .setSingleChoiceItems(themeNames, themeIdx) { d, w ->
+                themeIdx = w; applyTheme(); getPreferences(0).edit().putInt("theme_idx", w).apply(); d.dismiss()
+                for (t in tabs) { t.fg = fg(); t.bg = bg() }
             }.show()
-    }
-
-    private fun applyTheme() {
-        root.setBackgroundColor(theme.bg)
-        scrollView.setBackgroundColor(theme.bg)
-        output.setTextColor(theme.fg)
-        input.setTextColor(theme.fg)
-        for (t in tabs) {
-            t.parser = AnsiParser(theme)
-        }
-    }
-
-    private fun doBackup() {
-        if (!app.isBootstrapped()) { Toast.makeText(this, "Bootstrap first", Toast.LENGTH_SHORT).show(); return }
-        acquireWakeLock("backup")
-        Thread {
-            try {
-                val df = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-                val out = File(app.backupDir, "rootfs-$df.tar.gz")
-                val cmd = app.prootCmd("/bin/sh", "-c",
-                    "tar -czf /tmp/backup.tar.gz -C / . 2>/dev/null; echo done")
-                val p = ProcessBuilder(cmd).redirectErrorStream(true).start()
-                val all = p.inputStream.bufferedReader().readText()
-                val rc = p.waitFor()
-                if (rc == 0) {
-                    File(app.tmpDir, "backup.tar.gz").copyTo(out, overwrite = true)
-                    post { appendLine("Backup saved to ${out.absolutePath} (${out.length() / 1024} KB)", theme.green) }
-                } else {
-                    post { appendLine("Backup failed (rc=$rc)", theme.red) }
-                }
-            } catch (t: Throwable) {
-                post { appendLine("Backup error: ${t.message}", theme.red) }
-            } finally { releaseWakeLock() }
-        }.start()
     }
 
     private fun showQemuLauncher() {
-        val targets = arrayOf("x86_64", "aarch64", "arm", "i386", "riscv64", "mips")
-        AlertDialog.Builder(this).setTitle("Launch QEMU")
-            .setItems(targets) { _, which ->
-                val tgt = targets[which]
-                sendCommand("tdpkg install qemu-system-$tgt && termidroid qemu $tgt -m 512")
-                startActivity(Intent(this, QemuActivity::class.java).apply {
-                    putExtra("target", tgt)
-                })
-            }.show()
+        val tgts = arrayOf("x86_64", "aarch64", "arm", "i386", "riscv64", "mips")
+        AlertDialog.Builder(this).setTitle("QEMU target")
+            .setItems(tgts) { _, w -> sendCommand("tdpkg install qemu-system-${tgts[w]} && qemu-system-${tgts[w]} -nographic -m 512") }
+            .show()
     }
 
     private fun showRootInfo() {
-        val hasRoot = app.isRootAvailable()
-        val hasShizuku = app.isShizukuAvailable()
-        val msg = buildString {
-            appendLine("Root available: ${if (hasRoot) "yes" else "no"}")
-            appendLine("Shizuku available: ${if (hasShizuku) "yes" else "no"}")
-            appendLine()
-            appendLine("When root is present, type 'su' inside a tab to start a root shell.")
-            appendLine("Shizuku support: coming in a future release (binary launcher).")
-        }
+        val root = app.isRootAvailable(); val shiz = app.isShizukuAvailable()
+        val msg = "Root: ${if (root) "yes" else "no"}\nShizuku: ${if (shiz) "yes" else "no (detected by class only)"}\n\nType 'su' to open a root shell when available."
         AlertDialog.Builder(this).setTitle("Root / Shizuku").setMessage(msg)
-            .setPositiveButton(if (hasRoot) "Launch root shell" else "OK") { _, _ ->
-                if (hasRoot) sendCommand("su")
-            }.show()
+            .setPositiveButton(if (root) "su" else "OK") { _, _ -> if (root) sendCommand("su") }.show()
     }
 
     private fun showAbout() {
-        val msg = """Termidroid v${Termidroid.VERSION} (code ${Termidroid.VERSION_CODE})
-
-Architecture: ${app.detectArch()}
-Bootstrapped: ${app.isBootstrapped()}
-Rootfs: ${app.rootfsDir}
-Root: ${app.isRootAvailable()}
-Shizuku: ${app.isShizukuAvailable()}
-
-Apache License 2.0 — see .github/LICENSE
-Docs: see .github/ folder of the source repo.
-https://github.com/Seigh-sword/termidroid"""
-        AlertDialog.Builder(this).setTitle("About Termidroid").setMessage(msg)
-            .setPositiveButton("Open GitHub", null)
-            .setNeutralButton("OK", null).show()
+        val msg = "Termidroid v${Termidroid.VERSION} (code ${Termidroid.VERSION_CODE})\n\n" +
+            "Arch: ${app.detectArch()}\nBootstrapped: ${app.isBootstrapped()}\n" +
+            "Root: ${app.isRootAvailable()}\nShizuku: ${app.isShizukuAvailable()}\n\n" +
+            "Rootfs: ${app.rootfsDir}\n\nApache License 2.0\nhttps://github.com/Seigh-sword/termidroid"
+        AlertDialog.Builder(this).setTitle("About").setMessage(msg).setPositiveButton("OK", null).show()
     }
 
-    // Wake lock ------------------------------------------------------------
-    private fun acquireWakeLock(tag: String) {
+    private fun doBackup() {
+        if (!app.isBootstrapped()) { toast("Bootstrap first"); return }
+        acquireWakeLock()
+        Thread {
+            try {
+                val df = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+                val out = File(app.homeDir, "backup-$df.tgz")
+                val p = ProcessBuilder(app.prootCmd("/bin/sh", "-c",
+                    "tar -czf /root/backup.tgz -C / . 2>/dev/null; echo done")).redirectErrorStream(true).start()
+                p.inputStream.bufferedReader().readText()
+                val rc = p.waitFor()
+                File(app.tmpDir, "backup.tgz").takeIf { it.exists() }?.copyTo(out, overwrite = true)
+                post { appendLine(if (rc == 0) "Backup: ${out.absolutePath} (${out.length()/1024} KB)" else "Backup failed rc=$rc",
+                    if (rc == 0) ansiColor(2, false) else ansiColor(1, true)) }
+            } catch (t: Throwable) { post { appendLine("Backup err: ${t.message}", ansiColor(1, true)) } }
+            finally { releaseWakeLock() }
+        }.start()
+    }
+
+    private fun acquireWakeLock() {
         val pm = getSystemService(POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "termidroid:$tag").also {
-            it.acquire(10 * 60 * 1000L)
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "termidroid:run").apply {
+            acquire(10 * 60 * 1000L)
         }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
@@ -923,13 +807,15 @@ https://github.com/Seigh-sword/termidroid"""
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
-    // Notifications --------------------------------------------------------
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= 26) {
-            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-            val ch = NotificationChannel("termdroid", "Termidroid", NotificationManager.IMPORTANCE_LOW)
-            ch.description = "Termidroid terminal session"
-            nm.createNotificationChannel(ch)
+    private fun toast(s: String) { handler.post { android.widget.Toast.makeText(this, s, android.widget.Toast.LENGTH_SHORT).show() } }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        for (t in tabs) {
+            try { t.writer?.close() } catch (_: Exception) {}
+            try { t.reader?.close() } catch (_: Exception) {}
+            try { t.process?.destroy() } catch (_: Exception) {}
         }
+        try { wakeLock?.release() } catch (_: Exception) {}
     }
 }
