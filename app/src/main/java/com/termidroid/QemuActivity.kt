@@ -160,17 +160,23 @@ class QemuActivity : Activity() {
         if (kvm) args.add("-enable-kvm")
         args.addAll(listOf("-nographic", "-serial", "mon:stdio"))
 
-        val cmd = app.prootCmd("/bin/sh", "-c",
-            "if ! command -v qemu-system-$target >/dev/null 2>&1; then " +
-            "echo 'Installing qemu-system-$target ...'; tdpkg install qemu-system-$target; fi; " +
-            "echo 'Starting qemu-system-$target ${args.joinToString(" ")}'; " +
-            "exec qemu-system-$target ${args.joinToString(" ")}",
+        val qbin = "qemu-system-$target"
+        val argsShell = args.joinToString(" ") { "'" + it.replace("'", "'\\''") + "'" }
+        val cmd = app.prootCmd("/bin/sh", "--login", "-c",
+            "if ! command -v \"$qbin\" >/dev/null 2>&1; then " +
+            "echo 'Installing $qbin ...'; tdpkg install \"$qbin\" || exit 1; fi; " +
+            "echo 'Starting $qbin'; " +
+            "exec \"$qbin\" \"\$@\"",
+            "qemu-wrap",
+            workdir = "/root",
             extraBinds = listOf("/sdcard" to "/mnt/sdcard"))
+        val fullCmd = cmd.toMutableList()
+        fullCmd.addAll(args)
 
         log("Launching: qemu-system-$target -m $mem ...")
         Thread {
             try {
-                val pb = ProcessBuilder(cmd).redirectErrorStream(true)
+                val pb = ProcessBuilder(fullCmd).redirectErrorStream(true)
                 val p = pb.start()
                 process = p
                 reader = BufferedReader(InputStreamReader(p.inputStream))

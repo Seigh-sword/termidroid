@@ -357,9 +357,7 @@ class MainActivity : Activity() {
         if (event == null) return super.dispatchKeyEvent(null)
         // Hardware/hard keyboard support — let us catch Ctrl/arrow/vol up/down before EditText eats them
         if (event.action == android.view.KeyEvent.ACTION_DOWN) {
-            val alt = event.isAltPressed
-            val shift = event.isShiftPressed
-            val meta = event.metaState and android.view.KeyEvent.META_CTRL_ON != 0
+            val ctrlHeld = (event.metaState and android.view.KeyEvent.META_CTRL_ON) != 0
             when (event.keyCode) {
                 android.view.KeyEvent.KEYCODE_VOLUME_DOWN -> {
                     ctrlPressed = true; return true
