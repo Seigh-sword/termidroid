@@ -22,8 +22,6 @@ import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.method.ScrollingMovementMethod
 import android.view.KeyEvent
-import android.view.Menu
-import android.view.MenuItem
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
@@ -33,6 +31,7 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
@@ -181,6 +180,14 @@ class MainActivity : Activity() {
             setOnClickListener { newTab("${tabs.size + 1}", startShell = true); selectTab(tabs.size - 1) }
         }
         tabsBar.addView(newTabBtn, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+
+        val menuBtn = Button(this).apply {
+            text = "⋮"
+            textSize = 14f
+            setOnClickListener { v -> showMenu(v) }
+        }
+        tabsBar.addView(menuBtn, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         root.addView(tabsBar, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
@@ -737,36 +744,37 @@ esac
     private fun updateStatus(s: String) = runOnUiThread { statusBar.text = s }
 
     // Menu / features ------------------------------------------------------
-    override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        menu.add(0, 1, 0, "New tab")
-        menu.add(0, 2, 0, "Package manager…")
-        menu.add(0, 3, 0, "Themes")
-        menu.add(0, 4, 0, "Font size +")
-        menu.add(0, 5, 0, "Font size -")
-        menu.add(0, 6, 0, "Backup rootfs")
-        menu.add(0, 7, 0, "Send Ctrl-C")
-        menu.add(0, 8, 0, "Reset terminal")
-        menu.add(0, 9, 0, "Launch QEMU…")
-        menu.add(0, 10, 0, "Root / Shizuku")
-        menu.add(0, 11, 0, "About")
-        return true
-    }
-
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        return when (item.itemId) {
-            1 -> { newTab("${tabs.size + 1}", startShell = true); selectTab(tabs.size - 1); true }
-            2 -> { showPkgUi(); true }
-            3 -> { showThemePicker(); true }
-            4 -> { fontSize = (fontSize + 1f).coerceAtMost(32f); output.textSize = fontSize; app.prefs.edit().putFloat("font_size", fontSize).apply(); true }
-            5 -> { fontSize = (fontSize - 1f).coerceAtLeast(8f); output.textSize = fontSize; app.prefs.edit().putFloat("font_size", fontSize).apply(); true }
-            6 -> { doBackup(); true }
-            7 -> { writeRaw(3.toChar().toString()); true }
-            8 -> { resetCurrentTab(); true }
-            9 -> { showQemuLauncher(); true }
-            10 -> { showRootInfo(); true }
-            11 -> { showAbout(); true }
-            else -> super.onOptionsItemSelected(item)
+    private fun showMenu(v: View) {
+        val popup = PopupMenu(this, v)
+        val m = popup.menu
+        m.add(0, 1, 0, "New tab")
+        m.add(0, 2, 0, "Package manager…")
+        m.add(0, 3, 0, "Themes")
+        m.add(0, 4, 0, "Font size +")
+        m.add(0, 5, 0, "Font size -")
+        m.add(0, 6, 0, "Backup rootfs")
+        m.add(0, 7, 0, "Send Ctrl-C")
+        m.add(0, 8, 0, "Reset terminal")
+        m.add(0, 9, 0, "Launch QEMU…")
+        m.add(0, 10, 0, "Root / Shizuku")
+        m.add(0, 11, 0, "About")
+        popup.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                1 -> { newTab("${tabs.size + 1}", startShell = true); selectTab(tabs.size - 1) }
+                2 -> showPkgUi()
+                3 -> showThemePicker()
+                4 -> { fontSize = (fontSize + 1f).coerceAtMost(32f); output.textSize = fontSize; app.prefs.edit().putFloat("font_size", fontSize).apply() }
+                5 -> { fontSize = (fontSize - 1f).coerceAtLeast(8f); output.textSize = fontSize; app.prefs.edit().putFloat("font_size", fontSize).apply() }
+                6 -> doBackup()
+                7 -> writeRaw(3.toChar().toString())
+                8 -> resetCurrentTab()
+                9 -> showQemuLauncher()
+                10 -> showRootInfo()
+                11 -> showAbout()
+            }
+            true
         }
+        popup.show()
     }
 
     private fun resetCurrentTab() {
