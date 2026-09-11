@@ -190,18 +190,15 @@ class MainActivity : Activity() {
             isFillViewport = true
             isVerticalScrollBarEnabled = true
             setBackgroundColor(theme.bg)
-            setOnTouchListener { _, event ->
-                if (event.action == MotionEvent.ACTION_UP) {
-                    post {
-                        val child = getChildAt(0)
-                        val atBottom = scrollY + height >= child.measuredHeight - 50
-                        userScrolledUp = !atBottom
-                        if (atBottom) showKeyboardAndFocus()
-                    }
-                }
-                scaleDetector?.onTouchEvent(event)
-                false
-            }
+        }
+        output = TextView(this).apply {
+            textSize = fontSize
+            setTextColor(theme.fg)
+            typeface = Typeface.MONOSPACE
+            setPadding(24, 24, 24, 24)
+            movementMethod = ScrollingMovementMethod()
+            setTextIsSelectable(true)
+            isVerticalScrollBarEnabled = true
         }
         scaleDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(d: ScaleGestureDetector): Boolean {
@@ -212,15 +209,19 @@ class MainActivity : Activity() {
                 return true
             }
         })
-
-        output = TextView(this).apply {
-            textSize = fontSize
-            setTextColor(theme.fg)
-            typeface = Typeface.MONOSPACE
-            setPadding(24, 24, 24, 24)
-            movementMethod = ScrollingMovementMethod()
-            setTextIsSelectable(true)
-            isVerticalScrollBarEnabled = true
+        scrollView.setOnTouchListener { _, event ->
+            if (event.action == MotionEvent.ACTION_UP) {
+                scrollView.post {
+                    val child = scrollView.getChildAt(0)
+                    if (child != null) {
+                        val atBottom = scrollView.scrollY + scrollView.height >= child.measuredHeight - 50
+                        userScrolledUp = !atBottom
+                        if (atBottom) showKeyboardAndFocus()
+                    }
+                }
+            }
+            scaleDetector?.onTouchEvent(event)
+            false
         }
         scrollView.addView(output)
         root.addView(scrollView, LinearLayout.LayoutParams(
@@ -653,7 +654,8 @@ esac
             workdir = filesDir
         }
         val pb = ProcessBuilder(cmd).redirectErrorStream(true)
-        pb.environment().putAll(env)
+        val penv = pb.environment()
+        for ((k, v) in env) penv[k] = v
         if (workdir != null) pb.directory(workdir)
         val p = pb.start()
         t.process = p
