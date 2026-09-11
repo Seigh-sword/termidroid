@@ -57,7 +57,11 @@ jobs:
         run: ./gradlew --version
 
       - name: Build APKs (debug)
-        run: ./gradlew assembleDebug --stacktrace
+        run: |
+          set -x
+          ./gradlew assembleDebug --stacktrace --info 2>&1 | tee /tmp/build.log | grep -E "^\S*\.kt:|^e:|^w:|BUILD|FAIL|error:|exception|Unresolved" || true
+          echo "=== tail of build log ==="
+          tail -80 /tmp/build.log
 
       - name: List outputs
         run: find app/build/outputs -type f -name "*.apk" | sort

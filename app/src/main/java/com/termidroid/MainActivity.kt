@@ -318,6 +318,11 @@ class MainActivity : Activity() {
         if (startShell) startShellFor(tab)
     }
 
+    private fun tabButtonAt(tabIdx: Int): Button? {
+        // child 0 = newTabBtn (+), children 1..N = tab buttons, child N+1 = menuBtn (⋮)
+        return tabsBar.getChildAt(tabIdx + 1) as? Button
+    }
+
     private fun selectTab(idx: Int) {
         if (idx !in tabs.indices) return
         currentTab = idx
@@ -325,10 +330,8 @@ class MainActivity : Activity() {
         output.text = t.buf
         output.textSize = fontSize
         if (!userScrolledUp) scrollView.post { scrollView.fullScroll(View.FOCUS_DOWN) }
-        // highlight selected tab
-        for (i in 1 until tabsBar.childCount - 1) {
-            val v = tabsBar.getChildAt(i) as? Button ?: continue
-            v.alpha = if (i - 1 == idx) 1.0f else 0.6f
+        for (i in tabs.indices) {
+            tabButtonAt(i)?.alpha = if (i == idx) 1.0f else 0.6f
         }
         updateStatus("Tab ${t.name}  •  cwd=${t.cwd}  •  last=${if (t.lastExit == 0) "ok" else "exit=${t.lastExit}"}")
     }
@@ -337,10 +340,9 @@ class MainActivity : Activity() {
         if (tabs.size <= 1) return
         closeTabProcess(tabs[idx])
         tabs.removeAt(idx)
-        tabsBar.removeViewAt(idx + 1) // offset for +tab button
+        tabsBar.removeViewAt(idx + 1) // offset for +tab button at index 0
         if (currentTab >= tabs.size) currentTab = tabs.size - 1
-        // rename tab buttons
-        for (i in tabs.indices) (tabsBar.getChildAt(i + 1) as? Button)?.text = "${i + 1}"
+        for (i in tabs.indices) tabButtonAt(i)?.text = "${i + 1}"
         selectTab(currentTab)
     }
 
