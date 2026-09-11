@@ -161,7 +161,7 @@ class QemuActivity : Activity() {
         args.addAll(listOf("-nographic", "-serial", "mon:stdio"))
 
         val qbin = "qemu-system-$target"
-        val argsShell = args.joinToString(" ") { "'" + it.replace("'", "'\\''") + "'" }
+        // args passed to shell via "$@"
         val cmd = app.prootCmd("/bin/sh", "--login", "-c",
             "if ! command -v \"$qbin\" >/dev/null 2>&1; then " +
             "echo 'Installing $qbin ...'; tdpkg install \"$qbin\" || exit 1; fi; " +

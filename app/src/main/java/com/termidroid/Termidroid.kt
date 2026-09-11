@@ -110,6 +110,16 @@ class Termidroid : Application() {
         } catch (_: Exception) { false }
     }
 
+    /** Detect Shizuku via reflection (Shizuku is not bundled — ship detection only). */
+    fun isShizukuAvailable(): Boolean {
+        return try {
+            val cls = Class.forName("rikka.shizuku.Shizuku")
+            val getUid = cls.getMethod("getUid")
+            val uid = getUid.invoke(null) as? Int
+            uid != null && uid >= 0
+        } catch (_: Throwable) { false }
+    }
+
     fun prootUrl(): String = when (detectArch()) {
         "aarch64" -> "https://github.com/termux/termux-packages/releases/download/proot-v5.1.107-3/proot-aarch64"
         "armv7"   -> "https://github.com/termux/termux-packages/releases/download/proot-v5.1.107-3/proot-arm"
