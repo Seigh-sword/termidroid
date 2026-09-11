@@ -1,0 +1,146 @@
+name: Build & Release APK
+
+on:
+  push:
+    branches: [ main, master, 'arena/**' ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.5'
+
+      - name: Install Android SDK / cmdline-tools
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android licenses
+        run: yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+
+      - name: Install required SDK components
+        run: |
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --install \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "platform-tools"
+
+      - name: Fetch proot binaries into assets
+        run: |
+          mkdir -p app/src/main/assets/bin
+          cd app/src/main/assets/bin
+          curl -sSL -o proot-arm64-v8a "https://raw.githubusercontent.com/zydou/termux-proot-static/master/proot-aarch64" || true
+          curl -sSL -o proot-armeabi-v7a "https://raw.githubusercontent.com/zydou/termux-proot-static/master/proot-arm" || true
+          curl -sSL -o proot-x86_64 "https://raw.githubusercontent.com/zydou/termux-proot-static/master/proot-x86_64" || true
+          curl -sSL -o proot-x86 "https://raw.githubusercontent.com/zydou/termux-proot-static/master/proot-i686" || true
+          chmod 755 * 2>/dev/null || true
+          ls -la
+
+      - name: Download Gradle wrapper jar (if missing)
+        run: |
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ] || [ ! -s gradle/wrapper/gradle-wrapper.jar ]; then
+            mkdir -p gradle/wrapper
+            curl -sSL -o gradle/wrapper/gradle-wrapper.jar \
+              "https://raw.githubusercontent.com/gradle/gradle/v8.5.0/gradle/wrapper/gradle-wrapper.jar"
+          fi
+          chmod +x gradlew
+          ls -la gradle/wrapper/
+
+      - name: Gradle --version (sanity check)
+        run: ./gradlew --version
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Build release APK (unsigned)
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: List outputs
+        run: find app/build/outputs -type f -name "*.apk" | sort
+
+      - name: Rename APK to friendly name
+        run: |
+          set -eux
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VER="${GITHUB_REF#refs/tags/}"
+          else
+            VER="dev-${GITHUB_SHA::7}"
+          fi
+          mkdir -p release
+          cp app/build/outputs/apk/debug/app-debug.apk "release/Termidroid-debug-${VER}.apk"
+          ls -la release/
+
+      - name: Upload debug APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Termidroid-${{ github.sha }}
+          path: release/*.apk
+          if-no-files-found: error
+
+      - name: Upload unsigned release APK artifact (reference only - cannot install)
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: termidroid-release-unsigned-${{ github.sha }}
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: ignore
+
+      - name: Create GitHub Release & attach APKs
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Termidroid ${{ github.ref_name }}
+          files: |
+            release/Termidroid-debug-${{ github.ref_name }}.apk
+          body: |
+            ## Termidroid ${{ github.ref_name }}
+
+            **Download the APK:** `Termidroid-debug-${{ github.ref_name }}.apk` (attached below)
+
+            ### How to install
+            1. Download the APK on your Android device
+            2. Open the downloaded file
+            3. When prompted, allow "Install from unknown sources" for your browser
+            4. Tap Install, then Open
+
+            ### What's in this release
+            - Working Android terminal UI (monospace font, dark theme)
+            - Extra-keys row: CTRL, ESC, TAB, arrow keys
+            - Commands run through Android's `/system/bin/sh` (Toybox)
+            - `help` command listing built-in and shell commands
+            - Fixed `HOME`/`PATH` so `cd ~` works correctly
+            - Proper shell prompt instead of `$$` double prompt
+            - Full repository: Apache 2.0 license, Code of Conduct, contributing guide, docs
+
+            ### What's NOT here yet (coming soon)
+            - Real Linux userland via proot (gcc, g++, python3, make, cmake, git, etc.)
+            - Package installer screen
+            - QEMU launcher icon and VM management
+            - Full VT100/ANSI escape sequence support
+
+            ### Important notes
+            - This is a **debug** APK — installable on any Android 7.0+ device.
+              It is fully functional but not code-signed for Play Store distribution.
+            - Termidroid **cannot root your phone**. A terminal app cannot root a device.
+              Read `docs/COMMANDS.md` for an explanation.
+            - Every future `v*` tag will automatically build and release an APK via GitHub Actions.
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

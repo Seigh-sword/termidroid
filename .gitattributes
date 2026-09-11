@@ -1,0 +1,89 @@
+# Auto detect text files and perform LF normalization
+* text=auto eol=lf
+
+# Source code
+*.kt        text eol=lf diff=kotlin
+*.kts       text eol=lf diff=kotlin
+*.java      text eol=lf diff=java
+*.xml       text eol=lf
+*.gradle    text eol=lf
+*.properties text eol=lf
+*.pro       text eol=lf
+
+# Documentation
+*.md        text eol=lf diff=markdown
+*.txt       text eol=lf
+*.rst       text eol=lf
+
+# Config
+*.json      text eol=lf
+*.yaml      text eol=lf
+*.yml       text eol=lf
+*.toml      text eol=lf
+*.cfg       text eol=lf
+*.ini       text eol=lf
+
+# Shell scripts (Unix line endings always)
+*.sh        text eol=lf
+*.bash      text eol=lf
+*.zsh       text eol=lf
+*.fish      text eol=lf
+*.command   text eol=lf
+
+# Batch scripts (Windows line endings always)
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+# Native code
+*.c         text eol=lf diff=cpp
+*.h         text eol=lf diff=cpp
+*.cpp       text eol=lf diff=cpp
+*.hpp       text eol=lf diff=cpp
+*.m         text eol=lf diff=objc
+*.mm        text eol=lf diff=objc
+
+# Binary files
+*.apk       binary
+*.aab       binary
+*.ap_       binary
+*.dex       binary
+*.class     binary
+*.jar       binary
+*.so        binary
+*.a         binary
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.webp      binary
+*.bmp       binary
+*.ico       binary
+*.pdf       binary
+*.zip       binary
+*.tar       binary
+*.gz        binary
+*.bz2       binary
+*.xz        binary
+*.7z        binary
+*.rar       binary
+*.mp3       binary
+*.mp4       binary
+*.wav       binary
+*.ogg       binary
+*.flac      binary
+*.ttf       binary
+*.otf       binary
+*.woff      binary
+*.woff2     binary
+*.keystore  binary
+*.jks       binary
+*.p12       binary
+*.pfx       binary
+
+# Linguist overrides
+*.kt        linguist-language=Kotlin
+*.kts       linguist-language=Kotlin
+build.gradle linguist-language=Groovy
+gradlew     linguist-vendored
+gradlew.bat linguist-vendored
