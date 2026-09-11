@@ -43,17 +43,6 @@ jobs:
             "build-tools;34.0.0" \
             "platform-tools"
 
-      - name: Fetch proot binaries into assets
-        run: |
-          mkdir -p app/src/main/assets/bin
-          cd app/src/main/assets/bin
-          curl -sSL -o proot-arm64-v8a "https://raw.githubusercontent.com/zydou/termux-proot-static/master/proot-aarch64" || true
-          curl -sSL -o proot-armeabi-v7a "https://raw.githubusercontent.com/zydou/termux-proot-static/master/proot-arm" || true
-          curl -sSL -o proot-x86_64 "https://raw.githubusercontent.com/zydou/termux-proot-static/master/proot-x86_64" || true
-          curl -sSL -o proot-x86 "https://raw.githubusercontent.com/zydou/termux-proot-static/master/proot-i686" || true
-          chmod 755 * 2>/dev/null || true
-          ls -la
-
       - name: Download Gradle wrapper jar (if missing)
         run: |
           if [ ! -f gradle/wrapper/gradle-wrapper.jar ] || [ ! -s gradle/wrapper/gradle-wrapper.jar ]; then
@@ -64,19 +53,16 @@ jobs:
           chmod +x gradlew
           ls -la gradle/wrapper/
 
-      - name: Gradle --version (sanity check)
+      - name: Gradle --version
         run: ./gradlew --version
 
       - name: Build debug APK
         run: ./gradlew assembleDebug --stacktrace
 
-      - name: Build release APK (unsigned)
-        run: ./gradlew assembleRelease --stacktrace
-
       - name: List outputs
         run: find app/build/outputs -type f -name "*.apk" | sort
 
-      - name: Rename APK to friendly name
+      - name: Rename APK
         run: |
           set -eux
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
@@ -85,62 +71,61 @@ jobs:
             VER="dev-${GITHUB_SHA::7}"
           fi
           mkdir -p release
-          cp app/build/outputs/apk/debug/app-debug.apk "release/Termidroid-debug-${VER}.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "release/Termidroid-${VER}.apk"
           ls -la release/
 
-      - name: Upload debug APK artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
+        name: Upload APK artifact
         with:
           name: Termidroid-${{ github.sha }}
           path: release/*.apk
           if-no-files-found: error
 
-      - name: Upload unsigned release APK artifact (reference only - cannot install)
-        uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: termidroid-release-unsigned-${{ github.sha }}
-          path: app/build/outputs/apk/release/*.apk
-          if-no-files-found: ignore
-
-      - name: Create GitHub Release & attach APKs
+      - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           name: Termidroid ${{ github.ref_name }}
-          files: |
-            release/Termidroid-debug-${{ github.ref_name }}.apk
+          files: release/Termidroid-${{ github.ref_name }}.apk
           body: |
             ## Termidroid ${{ github.ref_name }}
 
-            **Download the APK:** `Termidroid-debug-${{ github.ref_name }}.apk` (attached below)
+            **Download:** `Termidroid-${{ github.ref_name }}.apk` (attached below)
 
             ### How to install
-            1. Download the APK on your Android device
+            1. Download the APK on your Android phone/tablet
             2. Open the downloaded file
-            3. When prompted, allow "Install from unknown sources" for your browser
+            3. If prompted, allow "Install from unknown sources" for your browser
             4. Tap Install, then Open
 
-            ### What's in this release
-            - Working Android terminal UI (monospace font, dark theme)
-            - Extra-keys row: CTRL, ESC, TAB, arrow keys
-            - Commands run through Android's `/system/bin/sh` (Toybox)
-            - `help` command listing built-in and shell commands
-            - Fixed `HOME`/`PATH` so `cd ~` works correctly
-            - Proper shell prompt instead of `$$` double prompt
-            - Full repository: Apache 2.0 license, Code of Conduct, contributing guide, docs
+            ### Changes in v0.2.1
+            - ✅ **Scrolling works!** You can now scroll up/down through terminal history.
+              Auto-scroll resumes automatically when you scroll back to the bottom.
+            - ✅ **Text selection:** long-press the output to select and copy text.
+            - ✅ **Root / Shizuku detection:** Termidroid now detects if your device is
+              rooted or if Shizuku is installed. Type `su` (or `sudo`) to enter a
+              root shell when available.
+            - ✅ **Fixed `toybox` spam:** the `help` command no longer accidentally runs
+              toybox.
+            - ✅ **License and docs** also copied into the `.github/` folder.
 
-            ### What's NOT here yet (coming soon)
-            - Real Linux userland via proot (gcc, g++, python3, make, cmake, git, etc.)
-            - Package installer screen
-            - QEMU launcher icon and VM management
-            - Full VT100/ANSI escape sequence support
+            ### Known limitations
+            - The proot Linux userland (`gcc`, `python3`, `git`, `apt`, etc.) is the
+              next major feature coming up. This release runs Android's built-in
+              `/system/bin/sh` (Toybox).
+            - VT100/ANSI color escape codes are still stripped — will be supported
+              with the proper terminal view in a future release.
+            - QEMU launcher, package manager screen, and extra QEMU home-screen icon
+              are coming after the proot layer lands.
 
-            ### Important notes
-            - This is a **debug** APK — installable on any Android 7.0+ device.
-              It is fully functional but not code-signed for Play Store distribution.
-            - Termidroid **cannot root your phone**. A terminal app cannot root a device.
-              Read `docs/COMMANDS.md` for an explanation.
-            - Every future `v*` tag will automatically build and release an APK via GitHub Actions.
+            ### About rooting
+            Termidroid **cannot root your phone** by itself. A terminal app cannot do
+            that — rooting requires unlocking the bootloader and flashing Magisk or
+            similar from outside Android. If you are already rooted OR if you have
+            Shizuku running, type `su` to get elevated privileges inside Termidroid.
+
+            ### Automatic builds
+            Every `v*` tag pushed to GitHub is automatically built and released by
+            GitHub Actions. No PC required — just push code from your phone.
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
