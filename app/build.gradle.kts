@@ -13,11 +13,9 @@ android {
         targetSdk = 34
         versionCode = 6
         versionName = "0.4.0"
-
-        // Include 4 ABIs so bootstrap can pick the matching proot/Alpine at runtime.
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
-        }
+        // Pure Kotlin/Java app — no native code in the APK; the proot binary is
+        // downloaded at runtime for whatever ABI the device reports.
+        // No ndk { abiFilters } here on purpose.
     }
 
     buildTypes {
