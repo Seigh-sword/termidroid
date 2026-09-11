@@ -12,7 +12,6 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -777,7 +776,8 @@ esac
 
     private fun resetCurrentTab() {
         val t = tabs.getOrNull(currentTab) ?: return
-        t.buf.clear()
+        t.buf.clearSpans()
+        t.buf.replace(0, t.buf.length, "")
         t.parser.reset()
         output.text = t.buf
     }

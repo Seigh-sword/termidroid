@@ -39,7 +39,9 @@ class AnsiParser(private val theme: Termidroid.Theme) {
     private var osc = StringBuilder()
 
     fun reset() {
-        buf.setLength(0); out.clear()
+        buf.setLength(0)
+        out.clearSpans()
+        out.replace(0, out.length, "")
         fg = theme.fg; bg = theme.bg
         bold = false; underline = false; inverse = false
         state = State.NORM; csi.setLength(0); osc.setLength(0)
