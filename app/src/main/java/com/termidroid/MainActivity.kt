@@ -1,7 +1,6 @@
 /*
  * Copyright 2026 Termidroid Contributors
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
+ * Licensed under the Apache License, Version 2.0
  */
 package com.termidroid
 
@@ -14,47 +13,63 @@ import android.os.Handler
 import android.os.Looper
 import android.text.SpannableStringBuilder
 import android.text.style.ForegroundColorSpan
-import android.view.KeyEvent
+import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
-import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
-import android.widget.Button
 import java.io.BufferedReader
+import java.io.File
+import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.zip.GZIPInputStream
 
 /**
- * Termidroid v0.2.1 — Android shell terminal.
- * - Fixed scrolling (you can scroll up; auto-scroll only if you're at the bottom)
- * - Proper toybox help (doesn't run toybox spuriously)
- * - Detects root / Shizuku — type 'su' to start a root shell if available
+ * Termidroid v0.3.0 — real Linux terminal on Android.
+ *
+ * First launch: downloads a static proot binary (~200 KB) and an Alpine Linux
+ * mini rootfs (~3 MB), extracts them, then drops you into a real Linux shell
+ * via proot (no root required). After that you can type 'tdpkg install gcc'
+ * (or python3, make, cmake, git, g++, qemu-system-x86_64, etc.) to install
+ * real Linux packages on demand.
+ *
+ * UI: no fake button bar. Tap anywhere on the terminal (especially the $
+ * prompt at the bottom) to bring up the keyboard and start typing — just
+ * like a real terminal.
  */
 class MainActivity : Activity() {
 
     private lateinit var output: TextView
     private lateinit var input: EditText
     private lateinit var scrollView: ScrollView
+    private lateinit var progress: ProgressBar
     private lateinit var handler: Handler
+
     private var process: Process? = null
     private var reader: BufferedReader? = null
     private var writer: OutputStreamWriter? = null
     private var userScrolledUp = false
+    private var bootstrapped = false
 
     private val cyan = Color.parseColor("#4FC3F7")
     private val red = Color.parseColor("#E74856")
     private val yellow = Color.parseColor("#F9F1A5")
+    private val green = Color.parseColor("#16C60C")
     private val gray = Color.GRAY
-    private val dkgray = Color.DKGRAY
+    private val fg = Color.parseColor("#CCCCCC")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         handler = Handler(Looper.getMainLooper())
 
-        val layout = LinearLayout(this).apply {
+        val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.BLACK)
         }
@@ -62,12 +77,13 @@ class MainActivity : Activity() {
         scrollView = ScrollView(this).apply {
             isFillViewport = true
             isVerticalScrollBarEnabled = true
-            setOnTouchListener { _, event ->
-                if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_SCROLL) {
-                    post {
-                        val child = getChildAt(0)
-                        val atBottom = scrollY + height >= child.measuredHeight - 50
+            setOnTouchListener { v, event ->
+                if (event.action == MotionEvent.ACTION_UP) {
+                    v.post {
+                        val child = (v as ScrollView).getChildAt(0)
+                        val atBottom = v.scrollY + v.height >= child.measuredHeight - 50
                         userScrolledUp = !atBottom
+                        if (atBottom) showKeyboardAndFocus()
                     }
                 }
                 false
@@ -76,134 +92,199 @@ class MainActivity : Activity() {
 
         output = TextView(this).apply {
             textSize = 13f
-            setTextColor(Color.parseColor("#CCCCCC"))
+            setTextColor(fg)
             typeface = Typeface.MONOSPACE
             setPadding(24, 24, 24, 24)
             setTextIsSelectable(true)
+            movementMethod = android.text.method.ScrollingMovementMethod()
         }
 
-        val extraKeysContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(Color.parseColor("#1a1a1a"))
-            setPadding(8, 8, 8, 8)
-        }
-        val keys = listOf("CTRL", "ESC", "TAB", "/", "-", "|", "↑", "↓", "←", "→")
-        val dp = (4 * resources.displayMetrics.density).toInt()
-        for (label in keys) {
-            val b = Button(this).apply {
-                text = label
-                textSize = 11f
-                setTextColor(Color.LTGRAY)
-                setBackgroundColor(Color.parseColor("#222222"))
-                typeface = Typeface.MONOSPACE
-                setPadding(dp, dp, dp, dp)
-                val lp = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { marginEnd = dp / 2 }
-                layoutParams = lp
-                setOnClickListener { onExtraKey(label) }
-            }
-            extraKeysContainer.addView(b)
+        progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            visibility = View.GONE
+            max = 100
         }
 
         input = EditText(this).apply {
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.GRAY)
-            hint = "type a command and press Enter..."
-            typeface = Typeface.MONOSPACE
-            textSize = 14f
-            setBackgroundColor(Color.parseColor("#151515"))
-            setPadding(24, 24, 24, 24)
+            visibility = View.GONE
+            setTextColor(Color.TRANSPARENT)
+            setHintTextColor(Color.TRANSPARENT)
+            setBackgroundColor(Color.TRANSPARENT)
+            height = 1
+            setPadding(0, 0, 0, 0)
         }
 
         scrollView.addView(output)
-        layout.addView(scrollView, LinearLayout.LayoutParams(
+        root.addView(scrollView, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-        layout.addView(extraKeysContainer, LinearLayout.LayoutParams(
+        root.addView(progress, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        layout.addView(input, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        setContentView(layout)
+        root.addView(input)
+        setContentView(root)
 
-        startShell()
+        // Tap anywhere -> focus input + show keyboard
+        scrollView.setOnClickListener { showKeyboardAndFocus() }
+        output.setOnClickListener { showKeyboardAndFocus() }
 
         input.setOnKeyListener { _, keyCode, event ->
             if (event.action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_ENTER) {
                 val cmd = input.text.toString().trim('\n', '\r')
                 input.setText("")
-                handleCommand(cmd)
+                sendCommand(cmd)
                 true
             } else false
         }
+
+        Thread { start() }.start()
     }
 
-    private fun startShell() {
+    private fun showKeyboardAndFocus() {
+        input.visibility = View.VISIBLE
+        input.requestFocus()
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.showSoftInput(input, 0)
+    }
+
+    private fun start() {
+        val app = Termidroid.instance
         try {
-            val pb = ProcessBuilder("/system/bin/sh")
-                .directory(filesDir)
-                .redirectErrorStream(true)
-            pb.environment()["HOME"] = filesDir.absolutePath
-            pb.environment()["PATH"] = "/system/bin:/system/xbin"
-            pb.environment()["TERM"] = "xterm-256color"
-            pb.environment()["TMPDIR"] = cacheDir.absolutePath
-            pb.environment()["PS1"] = "$ "
-            val p = pb.start()
-            process = p
-            reader = BufferedReader(InputStreamReader(p.inputStream))
-            writer = OutputStreamWriter(p.outputStream)
-
-            Thread { readerLoop() }.apply { isDaemon = true; start() }
-
-            val rootAvailable = hasRoot()
-            val shizukuAvailable = hasShizuku()
-
-            handler.post {
-                appendLine("Termidroid v0.2.1", cyan)
-                appendLine("Android shell — type 'help' for commands. (Built by GitHub Actions CI)", gray)
-                appendLine("----------------------------------------------------------------", dkgray)
-                if (rootAvailable) {
-                    appendLine("✓ Root detected — type 'su' to become root.", yellow)
-                } else if (shizukuAvailable) {
-                    appendLine("✓ Shizuku detected — type 'su' to run commands via Shizuku.", yellow)
-                } else {
-                    appendLine("No root / Shizuku detected. Commands run as the Termidroid app user.", gray)
-                    appendLine("Install Shizuku (or root your device) to use 'su'.", gray)
-                }
-                appendLine()
+            if (!app.isBootstrapped()) {
+                bootstrap()
             }
-        } catch (e: Exception) {
-            appendLine("Failed to start shell: ${e.message}", red)
+            installTdpkg()
+            startLoginShell()
+        } catch (t: Throwable) {
+            post { appendLine("Fatal error: ${t.message}", red); t.printStackTrace() }
         }
     }
 
-    /** Check if root is available by trying to run 'su -c id'. */
-    private fun hasRoot(): Boolean = try {
-        val p = ProcessBuilder("su", "-c", "id").redirectErrorStream(true).start()
-        val out = p.inputStream.bufferedReader().readText()
-        p.waitFor()
-        out.contains("uid=0")
-    } catch (_: Exception) { false }
+    // --------------------------------------------------------------------- Bootstrap
 
-    /**
-     * Check if Shizuku is available. Shizuku runs a server as shell (uid 2000)
-     * via ADB or root, and exposes a binder; we test by running /system/bin/sh
-     * via the `shizuku` exec helper if present, or by trying to connect to the
-     * standard shizuku socket path. Simpler: try `su` shell first; if regular
-     * su fails, try `sh /sdcard/Android/data/moe.shizuku...` path. For v0.2.1
-     * we detect Shizuku via the com.android.shell approach using `pm path
-     * moe.shizuku.privileged.api`.
-     */
-    private fun hasShizuku(): Boolean {
-        // Check if Shizuku app is installed
-        return try {
-            val p = ProcessBuilder("/system/bin/sh", "-c",
-                "pm list packages | grep -q moe.shizuku && echo yes || echo no")
-                .redirectErrorStream(true).start()
-            val out = p.inputStream.bufferedReader().readText().trim()
-            p.waitFor()
-            out.contains("yes")
-        } catch (_: Exception) { false }
+    private fun bootstrap() {
+        post {
+            progress.visibility = View.VISIBLE
+            progress.progress = 0
+            appendLine("Setting up Termidroid for the first time...", cyan)
+        }
+        val app = Termidroid.instance
+
+        // 1) Download proot binary (small, ~200KB)
+        val proot = app.prootFile
+        download(PROOT_URL, proot, "Downloading proot...", 0, 25)
+        proot.setExecutable(true)
+
+        // 2) Download Alpine mini rootfs
+        val tarball = File(app.tmpDir, "alpine.tgz")
+        download(ALPINE_ROOTFS_URL, tarball, "Downloading Alpine Linux rootfs (3 MB)...", 25, 90)
+
+        // 3) Extract
+        post {
+            appendLine("Extracting rootfs...", cyan)
+            progress.progress = 92
+        }
+        extractTarGz(tarball, app.rootfsDir)
+
+        // 4) Configure
+        File(app.rootfsDir, "etc/resolv.conf").writeText("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
+        File(app.rootfsDir, "etc/profile.d/tdroid.sh").writeText(
+            "export PS1='\\[\\033[36m\\][termidroid]\\[\\033[0m\\] \\w # '\n" +
+            "alias ll='ls -la'\n"
+        )
+        tarball.delete()
+        post { progress.progress = 100; progress.visibility = View.GONE }
+    }
+
+    private fun download(url: String, dest: File, phase: String, startPct: Int, endPct: Int) {
+        post { appendLine(phase, gray) }
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.connectTimeout = 30000
+        conn.readTimeout = 600000
+        conn.instanceFollowRedirects = true
+        val total = conn.contentLength.coerceAtLeast(1).toLong()
+        dest.parentFile?.mkdirs()
+        conn.inputStream.buffered().use { input ->
+            FileOutputStream(dest).use { out ->
+                val buf = ByteArray(8192)
+                var done = 0L
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    out.write(buf, 0, n)
+                    done += n
+                    val pct = startPct + ((done * (endPct - startPct)) / total).toInt()
+                    post { progress.progress = pct.coerceIn(startPct, endPct) }
+                }
+            }
+        }
+        conn.disconnect()
+    }
+
+    private fun extractTarGz(tgz: File, dest: File) {
+        dest.mkdirs()
+        Runtime.getRuntime().exec(
+            arrayOf("tar", "-xzf", tgz.absolutePath, "-C", dest.absolutePath)
+        ).waitFor()
+    }
+
+    /** Copy the tdpkg script from assets into $baseDir/bin, then bind-mount it into /usr/bin inside proot. */
+    private fun installTdpkg() {
+        val app = Termidroid.instance
+        val outFile = app.tdpkgFile
+        assets.open("tdpkg").use { inp ->
+            FileOutputStream(outFile).use { out -> inp.copyTo(out) }
+        }
+        outFile.setExecutable(true)
+        // Make tdpkg visible inside proot by copying it into /usr/bin/tdpkg in rootfs
+        val destInsideRootfs = File(app.rootfsDir, "usr/bin/tdpkg")
+        if (app.isBootstrapped()) {
+            outFile.copyTo(destInsideRootfs, overwrite = true)
+            destInsideRootfs.setExecutable(true)
+        }
+    }
+
+    // --------------------------------------------------------------------- Shell
+
+    private fun startLoginShell() {
+        val app = Termidroid.instance
+        bootstrapped = app.isBootstrapped()
+
+        val cmd = if (bootstrapped) app.loginCmd()
+                  else listOf("/system/bin/sh")
+
+        val env = if (bootstrapped) null else {
+            val e: MutableMap<String, String> = mutableMapOf()
+            e["HOME"] = filesDir.absolutePath
+            e["PATH"] = "/system/bin:/system/xbin"
+            e["TERM"] = "xterm-256color"
+            e["TMPDIR"] = cacheDir.absolutePath
+            e["PS1"] = "$ "
+            e
+        }
+        val workdir = if (bootstrapped) null else filesDir
+
+        val pb = ProcessBuilder(cmd).redirectErrorStream(true)
+        if (env != null) { pb.environment().putAll(env) }
+        if (workdir != null) pb.directory(workdir)
+        val p = pb.start()
+        process = p
+        reader = BufferedReader(InputStreamReader(p.inputStream))
+        writer = OutputStreamWriter(p.outputStream)
+        Thread { readerLoop() }.apply { isDaemon = true; start() }
+
+        post {
+            appendLine()
+            appendLine("Termidroid v0.3.0", cyan)
+            if (bootstrapped) {
+                appendLine("Running Alpine Linux via proot (no root required).", green)
+                appendLine("Type 'tdpkg install <package>' to install software.", yellow)
+                appendLine("Try: tdpkg install python3 git gcc g++ make cmake nodejs", gray)
+            } else {
+                appendLine("Running Android system shell (proot/bootstrap unavailable).", yellow)
+                appendLine("Bootstrap did not complete — some commands may not work.", red)
+            }
+            appendLine("Tap anywhere on this screen and start typing.", gray)
+            appendLine()
+            showKeyboardAndFocus()
+        }
     }
 
     private fun readerLoop() {
@@ -214,91 +295,29 @@ class MainActivity : Activity() {
                 if (n < 0) break
                 val chunk = String(buf, 0, n)
                     .replace("\u001B\\[[;0-9]*[a-zA-Z]".toRegex(), "")
+                    .replace("\u001B\\][^\\x07]*\\x07".toRegex(), "")
+                    .replace("\u0007", "")
                     .replace("\u0000", "")
-                handler.post { appendRaw(chunk) }
+                post { appendRaw(chunk) }
             }
-        } catch (_: Exception) {
-            handler.post { appendLine("[shell exited]", gray) }
-        }
+        } catch (_: Exception) {}
+        post { appendLine("[process exited]", gray) }
     }
 
-    private fun onExtraKey(label: String) {
-        when (label) {
-            "CTRL" -> writeToShell("\u0003")  // Ctrl+C (interrupt)
-            "ESC"  -> writeToShell("\u001B")
-            "TAB"  -> writeToShell("\t")
-            "↑"    -> writeToShell("\u001B[A")
-            "↓"    -> writeToShell("\u001B[B")
-            "→"    -> writeToShell("\u001B[C")
-            "←"    -> writeToShell("\u001B[D")
-            else   -> writeToShell(label)
-        }
-    }
-
-    private fun handleCommand(cmd: String) {
-        when (cmd.trim()) {
-            "exit", "quit" -> { appendLine("Goodbye.", cyan); finish(); return }
-            "help" -> printHelp()
-            "clear" -> runOnUiThread {
-                output.text = ""
-                userScrolledUp = false
-            }
-            "su", "sudo" -> startRootShell()
-            "" -> writeToShell("\n")
-            else -> writeToShell(cmd + "\n")
-        }
-    }
-
-    /** Try to launch a root/Shizuku shell. */
-    private fun startRootShell() {
-        appendLine("Attempting to switch to root shell...", yellow)
+    private fun sendCommand(cmd: String) {
+        val w = writer ?: return
         try {
-            // In the current session we can't easily replace the process mid-stream,
-            // so we just send 'su' to the existing shell. If su is available (real
-            // root or Shizuku's su shim), it will start a root subshell.
-            writeToShell("exec su\n")
-        } catch (e: Exception) {
-            appendLine("Could not start root shell: ${e.message}", red)
-            appendLine("Make sure your device is rooted or Shizuku is running.", red)
-        }
-    }
-
-    private fun writeToShell(text: String) {
-        try {
-            writer?.write(text)
-            writer?.flush()
+            w.write(cmd + "\n")
+            w.flush()
         } catch (_: Exception) {}
     }
 
-    private fun printHelp() {
-        appendLine()
-        appendLine("Termidroid v0.2.1 — Available commands", cyan)
-        appendLine()
-        appendLine("Built-in:", yellow)
-        appendLine("  help     Show this help")
-        appendLine("  clear    Clear the screen")
-        appendLine("  su/sudo  Start a root shell (requires root or Shizuku)")
-        appendLine("  exit     Quit Termidroid")
-        appendLine()
-        appendLine("Android shell commands (run 'ls /system/bin' for the full list):", yellow)
-        appendLine("  ls  cd  pwd  cat  echo  mkdir  rm  mv  cp  chmod")
-        appendLine("  ps  kill  top  df  getprop  am  pm  input  toybox")
-        appendLine()
-        appendLine("Tips:", yellow)
-        appendLine("  - Type 'toybox' with NO ARGUMENTS to see every built-in command name.")
-        appendLine("  - Type 'toybox --help' for a summary; '<command> --help' for usage.")
-        appendLine("  - Scroll up/down with your finger; auto-scroll resumes when you scroll to bottom.")
-        appendLine("  - Long-press the output to select/copy text.")
-        appendLine()
-        appendLine("Note: 'apt', 'git', 'gcc', 'python' require the proot Linux userland", red)
-        appendLine("layer, which is the next feature being built.", red)
-        appendLine()
-    }
+    // --------------------------------------------------------------------- UI helpers
 
     private fun appendRaw(text: String) {
         output.append(text)
-        if (!userScrolledUp) {
-            scrollView.post { scrollView.fullScroll(View.FOCUS_DOWN) }
+        if (!userScrolledUp) scrollView.post {
+            scrollView.fullScroll(View.FOCUS_DOWN)
         }
     }
 
@@ -314,15 +333,23 @@ class MainActivity : Activity() {
             }
         }
         output.append("\n")
-        if (!userScrolledUp) {
-            scrollView.post { scrollView.fullScroll(View.FOCUS_DOWN) }
+        if (!userScrolledUp) scrollView.post {
+            scrollView.fullScroll(View.FOCUS_DOWN)
         }
     }
+
+    private fun post(block: () -> Unit) = handler.post(block)
 
     override fun onDestroy() {
         try { writer?.close() } catch (_: Exception) {}
         try { reader?.close() } catch (_: Exception) {}
         try { process?.destroy() } catch (_: Exception) {}
         super.onDestroy()
+    }
+
+    companion object {
+        // Known good mirror for proot (Termux-distributed static binary)
+        private const val PROOT_URL = "https://github.com/termux/termux-packages/releases/download/proot-v5.1.107-3/proot-aarch64"
+        private const val ALPINE_ROOTFS_URL = "https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/aarch64/alpine-minirootfs-3.19.1-aarch64.tar.gz"
     }
 }

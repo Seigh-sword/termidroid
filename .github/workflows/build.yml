@@ -81,6 +81,31 @@ jobs:
           path: release/*.apk
           if-no-files-found: error
 
+      - name: Build debug APK
+        run: ./gradlew assembleDebug assembleRelease --stacktrace
+
+      - name: List outputs
+        run: find app/build/outputs -type f -name "*.apk" | sort
+
+      - name: Rename APK
+        run: |
+          set -eux
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VER="${GITHUB_REF#refs/tags/}"
+          else
+            VER="dev-${GITHUB_SHA::7}"
+          fi
+          mkdir -p release
+          cp app/build/outputs/apk/debug/app-debug.apk "release/Termidroid-${VER}.apk"
+          ls -la release/
+
+      - uses: actions/upload-artifact@v4
+        name: Upload APK artifact
+        with:
+          name: Termidroid-${{ github.sha }}
+          path: release/*.apk
+          if-no-files-found: error
+
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
@@ -90,42 +115,62 @@ jobs:
           body: |
             ## Termidroid ${{ github.ref_name }}
 
-            **Download:** `Termidroid-${{ github.ref_name }}.apk` (attached below)
+            **Download:** `Termidroid-${{ github.ref_name }}.apk`
+
+            ### What's new in v0.3.0
+            - **Real Linux shell via proot (no root required):** First launch
+              downloads a static `proot` binary (~200 KB) and an Alpine Linux
+              mini rootfs (~3 MB), then extracts and configures it. After that
+              you're dropped into a real `/bin/sh` inside Alpine Linux.
+            - **`tdpkg` — Termidroid's universal package manager:**
+              `tdpkg install gcc`, `tdpkg install python3 git g++ make cmake
+              nodejs qemu-system-x86_64`, etc. `tdpkg` auto-detects whether
+              you're on Alpine (apk), Debian (apt), or Arch (pacman) and runs
+              the correct install command.
+            - **No fake button bar:** Tap anywhere on the terminal to bring up
+              the keyboard — especially near the `$`/`#` prompt at the bottom.
+              This feels like a real terminal, not a toy app.
+            - **Long-press to select/copy text.**
+            - **Scroll with your finger;** auto-scroll resumes when you reach
+              the bottom.
+            - **All docs/LICENSE live in `.github/`** in the repo.
 
             ### How to install
-            1. Download the APK on your Android phone/tablet
+            1. Download the APK on your phone
             2. Open the downloaded file
-            3. If prompted, allow "Install from unknown sources" for your browser
-            4. Tap Install, then Open
+            3. Allow "Install from unknown sources" for your browser if asked
+            4. Install, then open
 
-            ### Changes in v0.2.1
-            - ✅ **Scrolling works!** You can now scroll up/down through terminal history.
-              Auto-scroll resumes automatically when you scroll back to the bottom.
-            - ✅ **Text selection:** long-press the output to select and copy text.
-            - ✅ **Root / Shizuku detection:** Termidroid now detects if your device is
-              rooted or if Shizuku is installed. Type `su` (or `sudo`) to enter a
-              root shell when available.
-            - ✅ **Fixed `toybox` spam:** the `help` command no longer accidentally runs
-              toybox.
-            - ✅ **License and docs** also copied into the `.github/` folder.
+            ### On first launch
+            You'll see a progress bar while proot and the Alpine rootfs
+            download. This takes about 10-30 seconds on Wi-Fi. After that,
+            every subsequent launch drops you straight into the shell.
 
-            ### Known limitations
-            - The proot Linux userland (`gcc`, `python3`, `git`, `apt`, etc.) is the
-              next major feature coming up. This release runs Android's built-in
-              `/system/bin/sh` (Toybox).
-            - VT100/ANSI color escape codes are still stripped — will be supported
-              with the proper terminal view in a future release.
-            - QEMU launcher, package manager screen, and extra QEMU home-screen icon
-              are coming after the proot layer lands.
+            ### Things you can try after setup
+            ```
+            tdpkg install python3       # Python 3
+            tdpkg install gcc g++ make  # C/C++ toolchain
+            tdpkg install git           # Git
+            tdpkg install cmake         # CMake
+            tdpkg install nodejs        # Node.js
+            tdpkg install qemu-system-x86_64   # QEMU x86_64 emulator
+            tdpkg upgrade               # Upgrade all packages
+            tdpkg search python         # Search for python packages
+            ```
 
-            ### About rooting
-            Termidroid **cannot root your phone** by itself. A terminal app cannot do
-            that — rooting requires unlocking the bootloader and flashing Magisk or
-            similar from outside Android. If you are already rooted OR if you have
-            Shizuku running, type `su` to get elevated privileges inside Termidroid.
+            ### Architecture
+            Currently built for **arm64-v8a** (most modern Android phones).
+            armeabi-v7a and x86_64 builds will be added in a later release.
 
-            ### Automatic builds
-            Every `v*` tag pushed to GitHub is automatically built and released by
-            GitHub Actions. No PC required — just push code from your phone.
+            ### Honest status
+            - ✅ Real Alpine Linux shell via proot on arm64 devices
+            - ✅ tdpkg wrapper for apk/apt/pacman
+            - ✅ Tap-to-type terminal UI, no fake key bar
+            - 🚧 VT100 colors / full TTY support (coming)
+            - 🚧 Package manager UI screen (just use `tdpkg` for now)
+            - 🚧 Dedicated QEMU launcher icon (use `qemu-system-*` from shell)
+            - 🚧 Shizuku / root shell bridging (coming next)
+
+            Termidroid cannot root your phone by itself.
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}

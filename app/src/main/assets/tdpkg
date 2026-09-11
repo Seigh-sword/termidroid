@@ -1,0 +1,135 @@
+#!/bin/sh
+# tdpkg - Termidroid package manager wrapper
+# Tries apk (Alpine), then apt (Debian/Ubuntu), then pacman (Arch),
+# telling the user what's happening at each step.
+
+set -e
+
+if [ ! -f /etc/alpine-release ] && [ ! -f /etc/debian_version ] && [ ! -f /etc/arch-release ]; then
+    echo "tdpkg: no supported Linux distro detected (need Alpine/Debian/Arch rootfs)"
+    echo "Bootstrap the Alpine userland first from Termidroid's setup screen."
+    exit 1
+fi
+
+usage() {
+    cat <<EOF
+tdpkg - Termidroid package manager
+
+Usage: tdpkg <command> [package...]
+
+Commands:
+  install <pkg>...    Install package(s) - tries apk, then apt, then pacman
+  remove <pkg>...     Uninstall package(s)
+  update              Refresh package index
+  upgrade             Upgrade all installed packages
+  search <query>      Search for a package
+  list                List installed packages
+  info <pkg>          Show package info
+  help                Show this help
+
+tdpkg is a smart wrapper - it picks the right package manager for your
+Linux distro automatically.
+EOF
+}
+
+detect_pm() {
+    if command -v apk >/dev/null 2>&1; then echo "apk"; return
+    elif command -v apt-get >/dev/null 2>&1; then echo "apt"; return
+    elif command -v pacman >/dev/null 2>&1; then echo "pacman"; return
+    fi
+    echo ""
+}
+
+run_install() {
+    pm=$(detect_pm)
+    case "$pm" in
+        apk)
+            echo "[tdpkg] Using apk (Alpine)..."
+            exec apk add "$@"
+            ;;
+        apt)
+            echo "[tdpkg] Using apt (Debian/Ubuntu)..."
+            apt-get update -y
+            exec apt-get install -y "$@"
+            ;;
+        pacman)
+            echo "[tdpkg] Using pacman (Arch)..."
+            exec pacman -S --noconfirm "$@"
+            ;;
+        *)
+            echo "tdpkg: no supported package manager found"
+            exit 1
+            ;;
+    esac
+}
+
+run_remove() {
+    pm=$(detect_pm)
+    case "$pm" in
+        apk)    exec apk del "$@" ;;
+        apt)    exec apt-get remove -y "$@" ;;
+        pacman) exec pacman -R --noconfirm "$@" ;;
+    esac
+}
+
+run_update() {
+    pm=$(detect_pm)
+    case "$pm" in
+        apk)    exec apk update ;;
+        apt)    exec apt-get update -y ;;
+        pacman) exec pacman -Sy ;;
+    esac
+}
+
+run_upgrade() {
+    pm=$(detect_pm)
+    case "$pm" in
+        apk)    exec apk upgrade ;;
+        apt)    apt-get update -y && exec apt-get upgrade -y ;;
+        pacman) exec pacman -Syu --noconfirm ;;
+    esac
+}
+
+run_search() {
+    pm=$(detect_pm)
+    case "$pm" in
+        apk)    exec apk search "$@" ;;
+        apt)    exec apt-cache search "$@" ;;
+        pacman) exec pacman -Ss "$@" ;;
+    esac
+}
+
+run_list() {
+    pm=$(detect_pm)
+    case "$pm" in
+        apk)    exec apk info ;;
+        apt)    exec dpkg -l ;;
+        pacman) exec pacman -Q ;;
+    esac
+}
+
+run_info() {
+    pm=$(detect_pm)
+    case "$pm" in
+        apk)    exec apk info "$@" ;;
+        apt)    exec apt-cache show "$@" ;;
+        pacman) exec pacman -Qi "$@" ;;
+    esac
+}
+
+cmd="$1"; shift || true
+case "$cmd" in
+    install|add|i)       run_install "$@" ;;
+    remove|del|rm|uninstall) run_remove "$@" ;;
+    update|refresh)      run_update ;;
+    upgrade|up)          run_upgrade ;;
+    search|find|s)       run_search "$@" ;;
+    list|l)              run_list ;;
+    info|show)           run_info "$@" ;;
+    help|-h|--help|"")   usage ;;
+    *)
+        # Fall back to just trying to install whatever was passed
+        echo "tdpkg: unknown command '$cmd', assuming 'install'..."
+        run_install "$cmd" "$@"
+        ;;
+esac
