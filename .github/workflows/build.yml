@@ -56,13 +56,14 @@ jobs:
       - name: Gradle --version
         run: ./gradlew --version
 
-      - name: Build debug APK
+      - name: Build APKs (debug)
         run: ./gradlew assembleDebug --stacktrace
 
       - name: List outputs
         run: find app/build/outputs -type f -name "*.apk" | sort
 
       - name: Rename APK
+        id: rename
         run: |
           set -eux
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
@@ -72,37 +73,13 @@ jobs:
           fi
           mkdir -p release
           cp app/build/outputs/apk/debug/app-debug.apk "release/Termidroid-${VER}.apk"
+          echo "VER=${VER}" >> "$GITHUB_OUTPUT"
           ls -la release/
 
       - uses: actions/upload-artifact@v4
         name: Upload APK artifact
         with:
-          name: Termidroid-${{ github.sha }}
-          path: release/*.apk
-          if-no-files-found: error
-
-      - name: Build debug APK
-        run: ./gradlew assembleDebug assembleRelease --stacktrace
-
-      - name: List outputs
-        run: find app/build/outputs -type f -name "*.apk" | sort
-
-      - name: Rename APK
-        run: |
-          set -eux
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            VER="${GITHUB_REF#refs/tags/}"
-          else
-            VER="dev-${GITHUB_SHA::7}"
-          fi
-          mkdir -p release
-          cp app/build/outputs/apk/debug/app-debug.apk "release/Termidroid-${VER}.apk"
-          ls -la release/
-
-      - uses: actions/upload-artifact@v4
-        name: Upload APK artifact
-        with:
-          name: Termidroid-${{ github.sha }}
+          name: Termidroid-${{ steps.rename.outputs.VER }}
           path: release/*.apk
           if-no-files-found: error
 
@@ -128,8 +105,8 @@ jobs:
               you're on Alpine (apk), Debian (apt), or Arch (pacman) and runs
               the correct install command.
             - **No fake button bar:** Tap anywhere on the terminal to bring up
-              the keyboard — especially near the `$`/`#` prompt at the bottom.
-              This feels like a real terminal, not a toy app.
+              the keyboard — especially near the $ prompt at the bottom. This
+              feels like a real terminal, not a toy app.
             - **Long-press to select/copy text.**
             - **Scroll with your finger;** auto-scroll resumes when you reach
               the bottom.
@@ -167,7 +144,7 @@ jobs:
             - ✅ tdpkg wrapper for apk/apt/pacman
             - ✅ Tap-to-type terminal UI, no fake key bar
             - 🚧 VT100 colors / full TTY support (coming)
-            - 🚧 Package manager UI screen (just use `tdpkg` for now)
+            - 🚧 Package manager UI screen (use `tdpkg` for now)
             - 🚧 Dedicated QEMU launcher icon (use `qemu-system-*` from shell)
             - 🚧 Shizuku / root shell bridging (coming next)
 
